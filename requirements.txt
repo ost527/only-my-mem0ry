@@ -1,0 +1,6 @@
+# Python deps for the mem0 MCP server.
+# Tested with: fastmcp 3.4.2, Python 3.10+.
+mem0ai
+fastmcp>=3.0,<4
+chromadb
+sentence-transformers

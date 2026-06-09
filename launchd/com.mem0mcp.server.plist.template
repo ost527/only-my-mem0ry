@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated/installed by install.sh. Placeholders (__X__) are filled in at install time. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mem0mcp.server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__SERVER_SCRIPT__</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MEM0_MCP_TRANSPORT</key>
+        <string>http</string>
+        <key>MEM0_MCP_HOST</key>
+        <string>127.0.0.1</string>
+        <key>MEM0_MCP_PORT</key>
+        <string>__PORT__</string>
+        <key>MEM0_LLM_MODEL</key>
+        <string>__MODEL__</string>
+        <key>MEM0_LLM_BASE_URL</key>
+        <string>__BASE_URL__</string>
+        <key>PATH</key>
+        <string>__PYBIN_DIR__:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/mem0-mcp.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/mem0-mcp.log</string>
+</dict>
+</plist>

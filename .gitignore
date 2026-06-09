@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Build artifacts
+build/
+*.app/
+
+# macOS
+.DS_Store
+
+# Local secrets / env (never commit)
+.env
+*.local
+
+# Local data (mem0 stores under ~/.mem0-mcp by default, but ignore if placed here)
+chroma/
+*.sqlite3
