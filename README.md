@@ -4,6 +4,12 @@ A local **[Mem0](https://github.com/mem0ai/mem0) MCP server** for macOS that you
 
 > Unofficial community tool — not affiliated with mem0ai.
 
+<p align="center">
+  <img src="assets/menu-bar.png" alt="mem0 menu bar toggle: green switch ON, showing the server URL http://127.0.0.1:8765/mcp" width="360">
+  <br>
+  <sub>Menu bar toggle — flip it on and the live server URL appears.</sub>
+</p>
+
 It runs the MCP server as a **single HTTP server** managed by `launchd`, so multiple MCP clients (Kiro, Claude Desktop, Cursor, …) share **one** process — no per-client duplicate/zombie processes. Turn it off when you don't need it to free RAM (~200 MB).
 
 ```
