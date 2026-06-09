@@ -15,4 +15,6 @@ swiftc -O -target "${ARCH}-apple-macos12.0" -framework Cocoa \
     -o "$APP/Contents/MacOS/MemoToggle" "$DIR/MemoToggle.swift"
 
 cp "$DIR/Info.plist" "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources"
+cp "$DIR/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 echo "built: $APP"
