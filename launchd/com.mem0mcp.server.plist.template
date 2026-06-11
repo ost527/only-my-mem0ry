@@ -18,10 +18,8 @@
         <string>127.0.0.1</string>
         <key>MEM0_MCP_PORT</key>
         <string>__PORT__</string>
-        <key>MEM0_LLM_MODEL</key>
-        <string>__MODEL__</string>
-        <key>MEM0_LLM_BASE_URL</key>
-        <string>__BASE_URL__</string>
+        <key>MEM0_IDLE_TIMEOUT</key>
+        <string>__IDLE__</string>
         <key>PATH</key>
         <string>__PYBIN_DIR__:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>

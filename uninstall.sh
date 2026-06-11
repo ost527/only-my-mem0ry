@@ -1,24 +1,27 @@
 #!/bin/bash
-# Remove launchd agents + menu bar app. Keeps your stored memories/venv/logs.
+# Remove the launchd backend agent. Keeps your stored memories/venv/logs.
 set -uo pipefail
 LA="$HOME/Library/LaunchAgents"
 
-for L in com.mem0mcp.server com.mem0mcp.toggle; do
-  launchctl unload "$LA/$L.plist" 2>/dev/null || true
-  rm -f "$LA/$L.plist"
-done
+launchctl unload "$LA/com.mem0mcp.server.plist" 2>/dev/null || true
+rm -f "$LA/com.mem0mcp.server.plist"
 
-# launchctl unload above terminates the managed processes. As a safety net,
-# only target the uniquely-named server script (never a generic binary name).
-pkill -f mem0_mcp_server.py 2>/dev/null || true
+# Legacy cleanup: remove the old menu-bar toggle agent + app if present
+# (versions before the automatic stdio-proxy lifecycle).
+launchctl unload "$LA/com.mem0mcp.toggle.plist" 2>/dev/null || true
+rm -f "$LA/com.mem0mcp.toggle.plist"
 rm -rf "$HOME/Applications/mem0 toggle.app"
 
+# Safety net: only target the uniquely-named scripts (never a generic binary).
+pkill -f mem0_mcp_server.py 2>/dev/null || true
+pkill -f mem0_proxy.py 2>/dev/null || true
+
 cat <<EOF
-Uninstalled: launchd agents (com.mem0mcp.server, com.mem0mcp.toggle) + menu bar app.
+Uninstalled: launchd backend agent (com.mem0mcp.server) + any legacy menu-bar toggle.
 
 Kept on purpose (delete manually if you want a full wipe):
   - venv:  <repo>/.venv
   - data:  ~/.mem0-mcp/chroma     (your stored memories)
-  - logs:  ~/Library/Logs/mem0-mcp.log , ~/Library/Logs/mem0-toggle.log
+  - logs:  ~/Library/Logs/mem0-mcp.log
   - the "local-mem0-mcp" entry in your MCP client config
 EOF
