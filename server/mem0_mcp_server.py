@@ -27,6 +27,7 @@ Env vars (all optional):
   MEM0_DEFAULT_USER      default user_id (default: developer_workspace)
   MEM0_RELATED_TOPK      how many nearest existing memories add_memory surfaces for
                          reconciliation (default: 3)
+  MEM0_SEARCH_TOPK       how many results search_memories returns (default: 10)
   MEM0_MCP_TRANSPORT     'stdio' (default) or 'http'
   MEM0_MCP_HOST          http host (default: 127.0.0.1)
   MEM0_MCP_PORT          http port (default: 8765)
@@ -137,6 +138,38 @@ def _results(resp):
     return resp.get("results", []) if isinstance(resp, dict) else (resp or [])
 
 
+# How many results search_memories returns.
+SEARCH_TOPK = int(os.environ.get("MEM0_SEARCH_TOPK", "10"))
+
+
+def _semantic_search(query: str, uid: str, limit: int):
+    """Rank memories by ascending vector distance (lower = more similar).
+
+    We query the vector store directly instead of using m.search(), because
+    mem0 2.0.4's Chroma path returns the raw L2 *distance* as the score while
+    its score_and_rank() treats that as a similarity and clamps every result to
+    1.0 -- which destroys ranking (all results tie, relevant ones get dropped).
+    Sorting by the distance ourselves restores correct nearest-first ranking.
+    """
+    try:
+        emb = m.embedding_model.embed(query, "search")
+        raw = m.vector_store.search(
+            query=query, vectors=emb, top_k=max(limit, 1), filters={"user_id": uid}
+        )
+    except Exception:
+        return []
+    items = []
+    for r in (raw or []):
+        payload = getattr(r, "payload", None) or {}
+        items.append({
+            "id": getattr(r, "id", None),
+            "memory": payload.get("data", ""),
+            "score": getattr(r, "score", None),
+        })
+    items.sort(key=lambda x: x["score"] if x["score"] is not None else float("inf"))
+    return items[:limit]
+
+
 @mcp.tool()
 def add_memory(text: str, user_id: str = "") -> str:
     """Store a memory. YOU (the calling LLM) supply the intelligence:
@@ -150,16 +183,8 @@ def add_memory(text: str, user_id: str = "") -> str:
     If user_id is omitted, the default user is used."""
     uid = user_id or DEFAULT_USER
     try:
-        # Find pre-existing related memories BEFORE storing (so the just-added
-        # one isn't returned as its own "related" hit).
-        # Nearest existing memories (mem0 returns them most-relevant-first).
-        # We don't threshold on score -- its scale depends on the vector metric;
-        # we surface the top few and let you, the LLM, judge real relevance.
-        related = []
-        try:
-            related = _results(m.search(text, filters={"user_id": uid}))[:RELATED_TOPK]
-        except Exception:
-            pass
+        # Nearest existing memories (ranked by the corrected distance search).
+        related = _semantic_search(text, uid, RELATED_TOPK)
 
         added = _results(m.add(text, user_id=uid, infer=False))
         new_id = added[0].get("id", "N/A") if added else "N/A"
@@ -194,7 +219,7 @@ def search_memories(query: str, user_id: str = "") -> str:
     """Search past memories relevant to a query/keyword. Returns memory IDs so you
     can update_memory / delete_memory them during reconciliation."""
     try:
-        results = _results(m.search(query, filters={"user_id": (user_id or DEFAULT_USER)}))
+        results = _semantic_search(query, (user_id or DEFAULT_USER), SEARCH_TOPK)
         if not results:
             return "🔍 No results."
         out = f"🔍 Results for '{query}':\n\n"
