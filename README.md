@@ -1,4 +1,4 @@
-# mem0-mcp-toggle
+# local-mem0-mcp
 
 **A fully local, zero-config [Mem0](https://github.com/mem0ai/mem0) memory server for MCP clients on macOS.**
 No LLM, no API key, no cloud — and no switch to flip. It starts when your IDE/CLI
@@ -52,8 +52,8 @@ downloads once on first use (~90 MB), then runs fully offline.
 ## Install
 
 ```bash
-git clone https://github.com/ost527/mem0-mcp-toggle.git
-cd mem0-mcp-toggle
+git clone https://github.com/ost527/local-mem0-mcp.git
+cd local-mem0-mcp
 ./install.sh
 ```
 
@@ -78,8 +78,8 @@ Desktop, Cursor) — point it at the **stdio proxy** (use the absolute paths
 {
   "mcpServers": {
     "local-mem0-mcp": {
-      "command": "/ABS/PATH/mem0-mcp-toggle/.venv/bin/python3",
-      "args": ["/ABS/PATH/mem0-mcp-toggle/server/mem0_proxy.py"]
+      "command": "/ABS/PATH/local-mem0-mcp/.venv/bin/python3",
+      "args": ["/ABS/PATH/local-mem0-mcp/server/mem0_proxy.py"]
     }
   }
 }
@@ -183,9 +183,10 @@ writer even with several clients open at once.
 
 ## FAQ
 
-**Why "toggle" in the name if there's no toggle?**
-Early versions had a menu-bar on/off switch. That manual toggle was replaced by
-the automatic lifecycle above; the repo name stuck.
+**What happened to the menu-bar toggle (and the old name)?**
+Early versions shipped a menu-bar on/off switch and were named `mem0-mcp-toggle`.
+The toggle was replaced by the automatic lifecycle above, and the project was
+renamed to `local-mem0-mcp`.
 
 **Does it need an LLM or API key?** No. Only a local embedder, which downloads
 once and then runs offline.

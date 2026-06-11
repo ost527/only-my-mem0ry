@@ -1,5 +1,5 @@
 #!/bin/bash
-# mem0-mcp-toggle installer (macOS).
+# local-mem0-mcp installer (macOS).
 # Sets up: a python venv + deps, and an ON-DEMAND launchd backend agent.
 #
 # Lifecycle: your MCP client launches a lightweight stdio proxy
@@ -16,7 +16,7 @@ IDLE="${MEM0_IDLE_TIMEOUT:-600}"
 LA="$HOME/Library/LaunchAgents"
 SERVER_LABEL="com.mem0mcp.server"
 
-echo "==> mem0-mcp-toggle installer"
+echo "==> local-mem0-mcp installer"
 echo "    repo:        $REPO"
 echo "    mode:        direct store (no LLM); agent-driven memory"
 echo "    port:        $PORT"
