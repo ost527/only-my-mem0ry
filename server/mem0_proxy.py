@@ -89,6 +89,19 @@ async def _keepalive() -> None:
 
 async def main() -> None:
     from fastmcp.server import create_proxy
+    from fastmcp.server.middleware import Middleware
+
+    class _EnsureBackend(Middleware):
+        """Before forwarding any request, make sure the backend is up; if it died
+        (idle-exit / crash / manual kill), kickstart it and wait. This makes the
+        proxy self-healing -- a client call never fails just because the backend
+        happened to be asleep."""
+        async def __call__(self, context, call_next):
+            if not _listening():
+                _log("backend down; kickstarting before forwarding")
+                _kickstart()
+                await _wait_ready(READY_TIMEOUT)
+            return await call_next(context)
 
     if not _listening():
         _log(f"backend not up; kickstarting {LABEL}")
@@ -97,6 +110,7 @@ async def main() -> None:
         _log(f"WARNING: backend {URL} not ready after {READY_TIMEOUT}s; serving anyway")
 
     proxy = create_proxy(URL)
+    proxy.add_middleware(_EnsureBackend())
     ka = asyncio.create_task(_keepalive())
     try:
         await proxy.run_async(transport="stdio")

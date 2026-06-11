@@ -209,6 +209,10 @@ once and then runs offline.
   `launchctl kickstart gui/$(id -u)/com.mem0mcp.server`.
 - **First write is slow / needs internet** → the embedder downloads once, then
   runs offline.
+- **Search feels off on an older store** → stores created before the cosine
+  upgrade use Chroma's default L2 distance; with the backend stopped, run
+  `.venv/bin/python server/migrate_cosine.py` to switch to cosine (reuses
+  embeddings, backs up first). New installs already use cosine.
 - **Free RAM right now** → close your clients (it idle-exits), or
   `launchctl kill TERM gui/$(id -u)/com.mem0mcp.server`.
 - **Only runs while logged in** — it's a LaunchAgent (per-user GUI session), not

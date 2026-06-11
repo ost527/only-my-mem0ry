@@ -39,11 +39,14 @@ import os
 import time
 import signal
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 from mem0 import Memory
+
+logger = logging.getLogger("mem0-mcp")
 
 
 def _expand(p: str) -> str:
@@ -129,6 +132,25 @@ config = {
 }
 
 m = Memory.from_config(config)
+
+
+def _ensure_cosine_for_new_store() -> None:
+    """For a brand-new (empty) store, (re)create the collection with cosine
+    distance so semantic ranking is optimal out of the box. Never touches a
+    populated store -- existing installs upgrade via server/migrate_cosine.py.
+    (mem0 2.0.4 creates Chroma collections with the default L2 space.)"""
+    try:
+        vs = m.vector_store
+        cname = getattr(vs, "collection_name", os.environ.get("MEM0_COLLECTION", "mem0"))
+        if (vs.collection.metadata or {}).get("hnsw:space") != "cosine" and vs.collection.count() == 0:
+            vs.client.delete_collection(cname)
+            vs.collection = vs.client.create_collection(cname, metadata={"hnsw:space": "cosine"})
+            logger.info("initialized empty Chroma collection '%s' with cosine distance", cname)
+    except Exception as e:
+        logger.debug("cosine-ensure skipped: %s", e)
+
+
+_ensure_cosine_for_new_store()
 
 mcp = FastMCP("Local-Mem0-MCP", lifespan=_lifespan)
 mcp.add_middleware(_ActivityMiddleware())
