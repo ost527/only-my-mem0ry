@@ -102,6 +102,15 @@ starts and loads the embedder); after that it's instant.
 | `search_memories(query, user_id?)` | Semantic search; returns memories **with IDs**. |
 | `list_memories(user_id?)` | List everything stored (with IDs). |
 
+**Prompt & resources** (for clients that surface them) make recall low-friction —
+no need for the agent to *remember* to search:
+
+| Kind | Name | What it does |
+|------|------|--------------|
+| Prompt | `load_context(query?)` | Pull relevant memories into the conversation as context — invoke at the start of a task so the agent recalls instead of re-asking. No query = list all. |
+| Resource | `memory://all` | All stored memories (with IDs). |
+| Resource | `memory://search/{query}` | Hybrid-ranked memories for `query`. |
+
 ---
 
 ## How memory works (the client is the brain)
@@ -118,6 +127,42 @@ but **your MCP client is one**, so it does the reasoning and drives these tools:
 To make step 3 easy, `add_memory` also returns the nearest existing memories.
 Under the hood the server uses mem0's `infer=False` path — embed and store
 verbatim — so writes are instant and deterministic, with no model call.
+
+---
+
+## Retrieval & tuning
+
+Search is **hybrid by default**: dense vector similarity (semantic) fused with a
+local BM25 lexical signal, so both paraphrases *and* exact identifiers (file paths,
+env-var names, IPs, function names) surface. Fusion defaults to **`rescue`** — it
+keeps the dense ranking and only *adds* exact matches the vector model missed, so
+it never reorders good dense results (provably non-regressing; its payoff grows as
+the store gets larger). An aggressive Reciprocal Rank Fusion is available via
+`MEM0_FUSION=rrf` (it can reorder dense results — measure first). Turn hybrid off
+with `MEM0_HYBRID_SEARCH=0`. No extra dependency; all local and deterministic.
+
+**Measure before you tune.** `server/eval_recall.py` builds a *throwaway* store
+with a labeled corpus and reports hit@k / MRR for dense vs hybrid (it never touches
+your real store or the backend):
+
+```bash
+.venv/bin/python server/eval_recall.py
+EVAL_VERBOSE=1 .venv/bin/python server/eval_recall.py   # per-query first-hit ranks
+```
+
+**Trying a different embedder.** Swapping `MEM0_EMBEDDER_MODEL` on a *populated*
+store breaks ranking (old vectors were produced by the old model). Compare
+candidates with the harness, then re-embed safely (backs up first; stop the backend
+first):
+
+```bash
+MEM0_EMBEDDER_MODEL=intfloat/multilingual-e5-small MEM0_EMBEDDER_DIMS=384 \
+    .venv/bin/python server/migrate_reembed.py
+```
+
+Good local, multilingual-friendly options for a bilingual store (both 384 dims):
+`intfloat/multilingual-e5-small` and
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`.
 
 ---
 
@@ -153,6 +198,10 @@ writer even with several clients open at once.
 | `MEM0_DEFAULT_USER` | `developer_workspace` | default `user_id` |
 | `MEM0_RELATED_TOPK` | `3` | nearest memories `add_memory` surfaces |
 | `MEM0_SEARCH_TOPK` | `10` | results `search_memories` returns |
+| `MEM0_HYBRID_SEARCH` | `1` | hybrid dense+lexical retrieval; `0` = dense only |
+| `MEM0_FUSION` | `rescue` | `rescue` (non-regressing) or `rrf` (aggressive) |
+| `MEM0_RRF_K` | `60` | RRF constant (used only when `MEM0_FUSION=rrf`) |
+| `MEM0_BM25_MAX_DOCS` | `5000` | cap on lexical scan size for very large stores |
 | `MEM0_MCP_PORT` | `8765` | backend HTTP port (must match the proxy) |
 
 **Proxy** (`server/mem0_proxy.py`; set via the `env` block of your MCP config):

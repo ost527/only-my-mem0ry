@@ -36,7 +36,9 @@ Env vars (all optional):
                          stdio proxy keeps it warm while a client is open.
 """
 import os
+import re
 import time
+import math
 import fcntl
 import signal
 import asyncio
@@ -238,15 +240,12 @@ SEARCH_TOPK = int(os.environ.get("MEM0_SEARCH_TOPK", "10"))
 _store_lock = threading.Lock()
 
 
-def _semantic_search(query: str, uid: str, limit: int):
-    """Rank memories by ascending vector distance (lower = more similar).
-
-    We query the vector store directly instead of using m.search(), because
-    mem0 2.0.4's Chroma path returns the raw L2 *distance* as the score while
-    its score_and_rank() treats that as a similarity and clamps every result to
-    1.0 -- which destroys ranking (all results tie, relevant ones get dropped).
-    Sorting by the distance ourselves restores correct nearest-first ranking.
-    """
+def _dense_search(query: str, uid: str, limit: int):
+    """Dense vector ranking: memories by ascending vector distance (lower = more
+    similar). We query the vector store directly instead of m.search() because
+    mem0 2.0.4's Chroma path returns the raw distance as the score while its
+    score_and_rank() clamps every result to 1.0 -- destroying ranking (all tie,
+    relevant ones drop). Sorting by distance ourselves restores nearest-first."""
     try:
         emb = m.embedding_model.embed(query, "search")
         raw = m.vector_store.search(
@@ -264,6 +263,129 @@ def _semantic_search(query: str, uid: str, limit: int):
         })
     items.sort(key=lambda x: x["score"] if x["score"] is not None else float("inf"))
     return items[:limit]
+
+
+# ---- lexical (BM25) + hybrid fusion ------------------------------------------
+# Why hybrid: developer memories are full of exact identifiers -- file paths,
+# env-var names, IPs, function names (e.g. ~/.ssh/oracle/oracle-32min.key,
+# COUPANG_SEARCH_RESULT_PRICE_ENABLED, 168.107.21.193, crawlSearchResultCard).
+# Pure dense (semantic) retrieval often misses exact tokens; a lexical BM25 signal
+# nails them. We fuse the two rankings with Reciprocal Rank Fusion (RRF), which is
+# robust and needs no score normalization across the two very different scales.
+# All local, deterministic, no extra dependency (BM25 is a few lines).
+_HYBRID = os.environ.get("MEM0_HYBRID_SEARCH", "1") not in ("0", "false", "False", "")
+_RRF_K = int(os.environ.get("MEM0_RRF_K", "60"))
+# Fusion mode: "rescue" (default, non-regressing -- dense order is preserved and
+# lexical only appends exact matches dense missed) or "rrf" (aggressive Reciprocal
+# Rank Fusion that can reorder dense results -- verify with server/eval_recall.py
+# on your own data before enabling, since it may demote a strong dense match).
+_FUSION = os.environ.get("MEM0_FUSION", "rescue").strip().lower()
+# Cap the lexical scan so a huge store can't slow a search; dense still covers it.
+_BM25_MAX_DOCS = int(os.environ.get("MEM0_BM25_MAX_DOCS", "5000"))
+_BM25_K1 = 1.5
+_BM25_B = 0.75
+
+
+def _tokenize(text: str):
+    # ASCII identifier parts split on _-./ etc.: COUPANG_SEARCH_RESULT ->
+    # [coupang, search, result]; 168.107.21.193 -> [168, 107, 21, 193]. Non-ASCII
+    # runs (e.g. Korean 쿠팡, 화면공유) are kept as their own tokens so lexical
+    # search helps a bilingual store too. camelCase stays one token, matching a
+    # same-cased query token.
+    return re.findall(r"[a-z0-9]+|[^\x00-\x7f]+", (text or "").lower())
+
+
+def _bm25_rank(query: str, corpus: list, limit: int):
+    """Rank corpus docs ([{id, memory}]) against the query with Okapi BM25.
+    Returns ranked [{id, memory, score}], score > 0 only (docs sharing >=1 query
+    term). Pure-Python, deterministic."""
+    q_terms = _tokenize(query)
+    if not q_terms or not corpus:
+        return []
+    docs = corpus[:_BM25_MAX_DOCS]
+    tokenized = [_tokenize(d.get("memory", "")) for d in docs]
+    n_docs = len(docs)
+    avgdl = (sum(len(t) for t in tokenized) / n_docs) if n_docs else 0.0
+    df = {term: sum(1 for toks in tokenized if term in toks) for term in set(q_terms)}
+    scored = []
+    for d, toks in zip(docs, tokenized):
+        if not toks:
+            continue
+        dl = len(toks)
+        score = 0.0
+        for term in q_terms:
+            n_qi = df.get(term, 0)
+            if n_qi == 0:
+                continue
+            f = toks.count(term)
+            if f == 0:
+                continue
+            idf = math.log(1 + (n_docs - n_qi + 0.5) / (n_qi + 0.5))
+            denom = f + _BM25_K1 * (1 - _BM25_B + _BM25_B * dl / avgdl) if avgdl else f + _BM25_K1
+            score += idf * (f * (_BM25_K1 + 1)) / denom
+        if score > 0:
+            scored.append({"id": d.get("id"), "memory": d.get("memory", ""), "score": score})
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:limit]
+
+
+def _rrf_merge(ranked_lists: list, limit: int, k: int = _RRF_K):
+    """Reciprocal Rank Fusion: combine ranked [{id, memory}] lists into one.
+    fused(id) = sum over lists of 1/(k + rank), rank starting at 1. Robust to the
+    different score scales of dense vs BM25; rewards items ranked high in either."""
+    fused = {}
+    text_by_id = {}
+    for lst in ranked_lists:
+        for rank, item in enumerate(lst, start=1):
+            mid = item.get("id")
+            if mid is None:
+                continue
+            fused[mid] = fused.get(mid, 0.0) + 1.0 / (k + rank)
+            text_by_id.setdefault(mid, item.get("memory", ""))
+    out = [{"id": mid, "memory": text_by_id.get(mid, ""), "score": s} for mid, s in fused.items()]
+    out.sort(key=lambda x: x["score"], reverse=True)
+    return out[:limit]
+
+
+def _fuse_rescue(dense: list, lexical: list, limit: int):
+    """Dense-anchored fusion (default): keep dense's ranking as the backbone -- it
+    never demotes a doc dense found -- then append lexical-only hits (exact matches
+    the vector model missed entirely) in lexical order. Provably non-regressing vs
+    dense: it can only ADD recall (rescue overlooked identifiers), never reorder
+    dense's results. The visible payoff grows with store size, where dense starts
+    dropping exact tokens out of top-k."""
+    out, seen = [], set()
+    for it in list(dense) + list(lexical):
+        mid = it.get("id")
+        if mid is None or mid in seen:
+            continue
+        seen.add(mid)
+        out.append(it)
+    return out[:limit]
+
+
+def _semantic_search(query: str, uid: str, limit: int):
+    """Hybrid retrieval (default ON): combine dense vector ranking with a lexical
+    BM25 ranking so both semantic paraphrases and exact-identifier matches surface.
+    Fusion is `rescue` by default (non-regressing; see _fuse_rescue) or `rrf`
+    (aggressive) via MEM0_FUSION. Falls back to dense-only if the lexical path fails
+    or hybrid is disabled (MEM0_HYBRID_SEARCH=0). Returns [{id, memory, score}]."""
+    limit = max(limit, 1)
+    # Pull more candidates than `limit` from each signal so fusion has room to work.
+    cand = max(limit * 4, 20)
+    dense = _dense_search(query, uid, cand)
+    if not _HYBRID:
+        return dense[:limit]
+    try:
+        corpus = _results(m.get_all(filters={"user_id": uid}))
+        lexical = _bm25_rank(query, corpus, cand)
+    except Exception:
+        return dense[:limit]
+    if not lexical:
+        return dense[:limit]
+    if _FUSION == "rrf":
+        return _rrf_merge([dense, lexical], limit)
+    return _fuse_rescue(dense, lexical, limit)
 
 
 @mcp.tool()
@@ -354,6 +476,59 @@ def delete_memory(memory_id: str) -> str:
         return f"✅ Deleted memory '{memory_id}'."
     except Exception as e:
         return f"❌ Delete failed: {e}"
+
+
+# ---- low-friction recall: MCP prompt + resources -----------------------------
+# Tools require the agent to *decide* to search; these make recall first-class so a
+# user (or the agent) can pull memory into context with one action. The per-client
+# proxy mirrors prompts/resources, so every connected client gets them too.
+
+@mcp.prompt()
+def load_context(query: str = "") -> str:
+    """Pull relevant long-term memories into the conversation as context. Invoke at
+    the START of a task -- optionally with a topic/query -- so the agent recalls what
+    it already knows instead of asking you to re-explain. With no query, all stored
+    memories are listed."""
+    uid = DEFAULT_USER
+    with _store_lock:
+        if query.strip():
+            results = _semantic_search(query, uid, SEARCH_TOPK)
+            head = f"Relevant memories for '{query}' (most relevant first):"
+        else:
+            results = _results(m.get_all(filters={"user_id": uid}))[:SEARCH_TOPK]
+            head = "Stored memories:"
+    if not results:
+        return ("No stored memories yet. As you work, call add_memory to save durable "
+                "facts (decisions, configs, paths, preferences) for next time.")
+    lines = [head, ""]
+    lines += [f"- [id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}" for r in results]
+    lines += ["",
+              "Treat these as established context. If any is now wrong/outdated, "
+              "reconcile with update_memory/delete_memory; save new durable facts with "
+              "add_memory."]
+    return "\n".join(lines)
+
+
+@mcp.resource("memory://all")
+def memory_all() -> str:
+    """All stored memories for the default user, as readable text (with IDs)."""
+    uid = DEFAULT_USER
+    with _store_lock:
+        results = _results(m.get_all(filters={"user_id": uid}))
+    if not results:
+        return "No memories stored."
+    return "\n".join(f"[id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}" for r in results)
+
+
+@mcp.resource("memory://search/{query}")
+def memory_search(query: str) -> str:
+    """Hybrid-ranked memories relevant to {query}; read memory://search/<your terms>."""
+    uid = DEFAULT_USER
+    with _store_lock:
+        results = _semantic_search(query, uid, SEARCH_TOPK)
+    if not results:
+        return f"No results for '{query}'."
+    return "\n".join(f"[id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}" for r in results)
 
 
 if __name__ == "__main__":
