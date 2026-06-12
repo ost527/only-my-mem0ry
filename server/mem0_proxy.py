@@ -28,6 +28,10 @@ import socket
 import asyncio
 import subprocess
 
+# Same dir as this script (sys.path[0]); the proxy must declare the instructions
+# itself because a FastMCP proxy answers initialize without mirroring the backend's.
+from mem0_instructions import INSTRUCTIONS
+
 HOST = os.environ.get("MEM0_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MEM0_MCP_PORT", "8765"))
 URL = f"http://{HOST}:{PORT}/mcp"
@@ -109,7 +113,7 @@ async def main() -> None:
     if not await _wait_ready(READY_TIMEOUT):
         _log(f"WARNING: backend {URL} not ready after {READY_TIMEOUT}s; serving anyway")
 
-    proxy = create_proxy(URL)
+    proxy = create_proxy(URL, name="local-mem0-mcp", instructions=INSTRUCTIONS)
     proxy.add_middleware(_EnsureBackend())
     ka = asyncio.create_task(_keepalive())
     try:

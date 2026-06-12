@@ -113,6 +113,38 @@ no need for the agent to *remember* to search:
 
 ---
 
+## Getting agents to use memory *proactively*
+
+Storage is half the problem; the other half is getting agents to *recall before
+asking* and *save without being told* — so you never repeat yourself and tokens
+aren't burned re-explaining. Three layers push for that:
+
+1. **Server instructions** (built in). Sent to every client in the MCP
+   initialize response; most clients inject them into the agent's system
+   prompt: search memory at task start and before asking the user anything,
+   save durable facts the moment they appear, reconcile instead of duplicating,
+   never store secrets. Both the backend and the proxy declare them (a FastMCP
+   proxy answers initialize itself), see `server/mem0_instructions.py`.
+2. **When-to-call tool descriptions** (built in). `search_memories` and
+   `add_memory` carry explicit triggers, so even an agent that reads only the
+   tool schema knows *when* to fire them.
+3. **A rules-file snippet** (recommended). Clients differ in whether they
+   surface server instructions, so for maximum reliability also paste this into
+   the agent's always-on rules (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, Kiro
+   steering, ...):
+
+   ```markdown
+   ## Long-term memory (local-mem0-mcp)
+   You have persistent memory shared with the user's other LLM clients/agents. Use it without being asked:
+   - Task start: call search_memories with the task's key terms.
+   - Before asking the user anything: search_memories first — the answer may already be stored.
+   - On learning a durable fact (decision, preference, config, path, environment quirk): call add_memory immediately, one atomic fact per call.
+   - Reconcile, don't duplicate: update_memory to refine/merge; delete_memory when a memory becomes wrong.
+   - Never store secrets (passwords, API keys, tokens).
+   ```
+
+---
+
 ## How memory works (the client is the brain)
 
 Mem0's value is "smart memory": pull out the durable facts, then add / update /

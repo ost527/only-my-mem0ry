@@ -65,4 +65,9 @@ shared backend; closing the last client lets the backend idle-exit after ${IDLE}
 and free its RAM. Multiple clients safely share the one backend. No toggle.
 
 Memories are embedded locally and stored verbatim — no LLM, no API key.
+
+Recommended: make agents recall/save WITHOUT being told. Server instructions
+and tool descriptions already push for this, but for maximum reliability paste
+the rules snippet from README.md ("Getting agents to use memory proactively")
+into your agent's always-on rules file (AGENTS.md / CLAUDE.md / .cursorrules).
 EOF

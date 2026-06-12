@@ -112,6 +112,37 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 
 ---
 
+## 에이전트가 메모리를 *알아서* 쓰게 만들기
+
+저장은 문제의 절반일 뿐입니다. 나머지 절반은 에이전트가 *묻기 전에 회상*하고
+*시키지 않아도 저장*하게 만드는 것입니다 — 그래야 같은 설명을 반복하지 않고
+토큰도 아낄 수 있습니다. 세 개의 층이 이를 밀어붙입니다:
+
+1. **서버 instructions** (내장). MCP initialize 응답으로 모든 클라이언트에
+   전달되며, 대부분의 클라이언트가 에이전트의 시스템 프롬프트에 주입합니다:
+   작업 시작 시와 사용자에게 묻기 전에 메모리를 먼저 검색하고, 영속적 사실은
+   알게 된 즉시 저장하며, 중복 대신 조정(reconcile)하고, 비밀값은 절대 저장하지
+   않는다. 백엔드와 proxy 둘 다 선언합니다(FastMCP proxy는 initialize에 스스로
+   응답하므로). `server/mem0_instructions.py` 참고.
+2. **호출 시점이 담긴 툴 설명** (내장). `search_memories`와 `add_memory`에
+   명시적 트리거가 들어 있어, 툴 스키마만 읽는 에이전트도 *언제* 호출해야 하는지
+   알 수 있습니다.
+3. **룰 파일 스니펫** (권장). 서버 instructions를 노출하는 방식은 클라이언트마다
+   다르므로, 최대한 확실하게 하려면 아래를 에이전트의 상시 룰(`AGENTS.md`,
+   `CLAUDE.md`, `.cursorrules`, Kiro steering 등)에도 붙여넣으세요:
+
+   ```markdown
+   ## Long-term memory (local-mem0-mcp)
+   You have persistent memory shared with the user's other LLM clients/agents. Use it without being asked:
+   - Task start: call search_memories with the task's key terms.
+   - Before asking the user anything: search_memories first — the answer may already be stored.
+   - On learning a durable fact (decision, preference, config, path, environment quirk): call add_memory immediately, one atomic fact per call.
+   - Reconcile, don't duplicate: update_memory to refine/merge; delete_memory when a memory becomes wrong.
+   - Never store secrets (passwords, API keys, tokens).
+   ```
+
+---
+
 ## 메모리 동작 방식 (클라이언트가 두뇌)
 
 Mem0의 가치는 "스마트 메모리"입니다: 오래 남길 사실을 뽑아낸 뒤 add / update /

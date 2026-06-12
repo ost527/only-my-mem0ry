@@ -50,6 +50,8 @@ from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 from mem0 import Memory
 
+from mem0_instructions import INSTRUCTIONS
+
 logger = logging.getLogger("mem0-mcp")
 
 
@@ -215,7 +217,7 @@ def _ensure_cosine_for_new_store() -> None:
 
 _ensure_cosine_for_new_store()
 
-mcp = FastMCP("Local-Mem0-MCP", lifespan=_lifespan)
+mcp = FastMCP("Local-Mem0-MCP", lifespan=_lifespan, instructions=INSTRUCTIONS)
 mcp.add_middleware(_ActivityMiddleware())
 
 
@@ -390,7 +392,10 @@ def _semantic_search(query: str, uid: str, limit: int):
 
 @mcp.tool()
 def add_memory(text: str, user_id: str = "") -> str:
-    """Store a memory. YOU (the calling LLM) supply the intelligence:
+    """Store a memory. Call this THE MOMENT a durable, reusable fact appears --
+    a decision, preference, config value, path/identifier, environment quirk, or
+    recurring command -- not only at the end of a task. Never store secrets
+    (passwords, API keys, tokens). YOU (the calling LLM) supply the intelligence:
     - Extract atomic facts from the user's text and add each as its own memory
       (one clear, self-contained fact per call).
     - Prefer calling search_memories first to find related/duplicate/contradicting
@@ -435,8 +440,11 @@ def update_memory(memory_id: str, text: str) -> str:
 
 @mcp.tool()
 def search_memories(query: str, user_id: str = "") -> str:
-    """Search past memories relevant to a query/keyword. Returns memory IDs so you
-    can update_memory / delete_memory them during reconciliation."""
+    """Search the user's long-term memory (shared across all their LLM clients).
+    Call this FIRST at the start of a task (with its key terms) and BEFORE asking
+    the user for information they may have provided before -- recalling is cheaper
+    than re-asking. Returns memories with IDs so you can update_memory /
+    delete_memory them during reconciliation."""
     try:
         with _store_lock:
             results = _semantic_search(query, (user_id or DEFAULT_USER), SEARCH_TOPK)
