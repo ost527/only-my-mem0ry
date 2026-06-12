@@ -21,5 +21,9 @@ path/identifier, environment quirk, recurring command): call add_memory -- one \
 atomic, self-contained fact per call.
 - Reconcile instead of duplicating: update_memory refines/merges an existing \
 memory; delete_memory removes one that became wrong or obsolete.
+- CORE memory: pin_memory the handful of identity-level facts needed in most \
+sessions (they mirror to an always-on file); core is bounded -- keep it minimal.
+- Periodically, or when memory feels noisy, run the curate_memories prompt to \
+merge duplicates, drop stale facts, and refresh what is pinned.
 - Never store secrets (passwords, API keys, tokens).
 """

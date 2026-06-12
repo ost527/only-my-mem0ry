@@ -28,6 +28,9 @@ Env vars (all optional):
   MEM0_RELATED_TOPK      how many nearest existing memories add_memory surfaces for
                          reconciliation (default: 3)
   MEM0_SEARCH_TOPK       how many results search_memories returns (default: 10)
+  MEM0_CORE_BUDGET       max total chars of pinned (core) memories (default: 4000)
+  MEM0_CORE_FILE         always-on core file mirror (default: <store parent>/CORE_MEMORY.md)
+  MEM0_META_FILE         pin/usage-stats sidecar (default: <store parent>/memory_meta.json)
   MEM0_MCP_TRANSPORT     'stdio' (default) or 'http'
   MEM0_MCP_HOST          http host (default: 127.0.0.1)
   MEM0_MCP_PORT          http port (default: 8765)
@@ -37,6 +40,7 @@ Env vars (all optional):
 """
 import os
 import re
+import json
 import time
 import math
 import fcntl
@@ -287,6 +291,16 @@ _BM25_MAX_DOCS = int(os.environ.get("MEM0_BM25_MAX_DOCS", "5000"))
 _BM25_K1 = 1.5
 _BM25_B = 0.75
 
+# mem0 2.0.4's Memory.get_all() silently defaults top_k to 20, which would
+# truncate the BM25 corpus, listings, and curation to 20 memories. Always pass an
+# explicit generous limit through this helper instead.
+_GET_ALL_TOPK = max(_BM25_MAX_DOCS, 10000)
+
+
+def _get_all(uid: str):
+    """ALL memories for uid as [{id, memory, created_at, ...}] (no 20-row cap)."""
+    return _results(m.get_all(filters={"user_id": uid}, top_k=_GET_ALL_TOPK))
+
 
 def _tokenize(text: str):
     # ASCII identifier parts split on _-./ etc.: COUPANG_SEARCH_RESULT ->
@@ -379,7 +393,7 @@ def _semantic_search(query: str, uid: str, limit: int):
     if not _HYBRID:
         return dense[:limit]
     try:
-        corpus = _results(m.get_all(filters={"user_id": uid}))
+        corpus = _get_all(uid)
         lexical = _bm25_rank(query, corpus, cand)
     except Exception:
         return dense[:limit]
@@ -388,6 +402,111 @@ def _semantic_search(query: str, uid: str, limit: int):
     if _FUSION == "rrf":
         return _rrf_merge([dense, lexical], limit)
     return _fuse_rescue(dense, lexical, limit)
+
+
+# ---- core memory (pinned, bounded, always-on) + usage stats -------------------
+# Retrieval-based memory has one structural weakness: the agent must *decide* to
+# search. A small curated set of PINNED memories closes that gap, Hermes-style:
+# it is mirrored to a markdown file (CORE_FILE) the user references from an
+# always-on rules file (AGENTS.md / CLAUDE.md / .cursorrules), so those facts
+# enter context every session deterministically -- no tool call, no retrieval
+# roulette. Core is strictly bounded (CORE_BUDGET chars): pinning beyond the
+# budget is refused, so the always-on block can never bloat every session.
+# Pin state and usage stats live in a JSON sidecar (META_PATH), NOT in Chroma
+# payloads: mem0's update() rebuilds payload metadata (a pinned flag would be
+# silently dropped), and stats bookkeeping must never mutate the vector index.
+_STATE_DIR = os.path.dirname(CHROMA_PATH)
+META_PATH = _expand(os.environ.get("MEM0_META_FILE", os.path.join(_STATE_DIR, "memory_meta.json")))
+CORE_FILE = _expand(os.environ.get("MEM0_CORE_FILE", os.path.join(_STATE_DIR, "CORE_MEMORY.md")))
+CORE_BUDGET = int(os.environ.get("MEM0_CORE_BUDGET", "4000"))
+
+
+def _atomic_write(path: str, text: str) -> None:
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def _load_meta() -> dict:
+    try:
+        with open(META_PATH, encoding="utf-8") as f:
+            meta = json.load(f)
+        if not isinstance(meta, dict):
+            meta = {}
+    except (OSError, ValueError):
+        meta = {}
+    meta.setdefault("pinned", [])
+    meta.setdefault("access", {})
+    return meta
+
+
+def _save_meta(meta: dict) -> None:
+    try:
+        _atomic_write(META_PATH, json.dumps(meta, ensure_ascii=False, indent=1))
+    except OSError as e:
+        logger.warning("could not persist memory meta %s: %s", META_PATH, e)
+
+
+def _record_access(ids) -> None:
+    """Bump per-memory usage stats (retrieval count + last-used date). Best-effort:
+    stats only feed curation hints and must never fail or slow a search."""
+    ids = [i for i in ids if i]
+    if not ids:
+        return
+    try:
+        meta = _load_meta()
+        today = time.strftime("%Y-%m-%d")
+        for mid in ids:
+            ent = meta["access"].get(mid) or {}
+            ent["count"] = int(ent.get("count", 0)) + 1
+            ent["last"] = today
+            meta["access"][mid] = ent
+        _save_meta(meta)
+    except Exception as e:
+        logger.debug("access-stats update skipped: %s", e)
+
+
+def _memory_text(memory_id: str):
+    """Text of one memory straight from the vector store (any user_id), or None
+    if the id no longer exists."""
+    try:
+        rec = m.vector_store.get(memory_id)
+        return (getattr(rec, "payload", None) or {}).get("data")
+    except Exception:
+        return None
+
+
+def _core_items(meta: dict) -> list:
+    """Resolve pinned ids to [{id, memory}], dropping (and persisting away) ids
+    whose memory was deleted out-of-band."""
+    items, stale = [], []
+    for mid in meta.get("pinned", []):
+        text = _memory_text(mid)
+        if text is None:
+            stale.append(mid)
+        else:
+            items.append({"id": mid, "memory": text})
+    if stale:
+        meta["pinned"] = [i for i in meta["pinned"] if i not in stale]
+        _save_meta(meta)
+    return items
+
+
+def _sync_core_file(items: list) -> None:
+    """Mirror core memories to CORE_FILE so always-on rules files can include
+    them. Must be called after every mutation that can change core content."""
+    body = ("\n".join(f"- {it['memory']}  (id: {it['id']})" for it in items)
+            if items else "(core memory is empty -- pin_memory adds entries)")
+    text = (
+        "# Core memory (always-on) — local-mem0-mcp\n"
+        "<!-- Auto-generated; do not edit. Manage with pin_memory / unpin_memory. -->\n\n"
+        f"{body}\n"
+    )
+    try:
+        _atomic_write(CORE_FILE, text)
+    except OSError as e:
+        logger.warning("could not sync core memory file %s: %s", CORE_FILE, e)
 
 
 @mcp.tool()
@@ -433,6 +552,9 @@ def update_memory(memory_id: str, text: str) -> str:
     try:
         with _store_lock:
             m.update(memory_id, text)
+            meta = _load_meta()
+            if memory_id in meta["pinned"]:
+                _sync_core_file(_core_items(meta))
         return f"✅ Updated memory '{memory_id}': {text}"
     except Exception as e:
         return f"❌ Update failed: {e}"
@@ -448,11 +570,14 @@ def search_memories(query: str, user_id: str = "") -> str:
     try:
         with _store_lock:
             results = _semantic_search(query, (user_id or DEFAULT_USER), SEARCH_TOPK)
+            _record_access([r.get("id") for r in results])
+            pinned = set(_load_meta()["pinned"])
         if not results:
             return "🔍 No results."
         out = f"🔍 Results for '{query}':\n\n"
         for i, r in enumerate(results, 1):
-            out += f"{i}. [id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}\n"
+            pin = " 📌" if r.get("id") in pinned else ""
+            out += f"{i}. [id: {r.get('id', 'N/A')}]{pin} {r.get('memory', '(empty)')}\n"
         return out
     except Exception as e:
         return f"❌ Search failed: {e}"
@@ -460,15 +585,18 @@ def search_memories(query: str, user_id: str = "") -> str:
 
 @mcp.tool()
 def list_memories(user_id: str = "") -> str:
-    """List all stored memories for the (default) user."""
+    """List all stored memories for the (default) user. Pinned (core) memories are
+    marked with 📌."""
     try:
         with _store_lock:
-            results = _results(m.get_all(filters={"user_id": (user_id or DEFAULT_USER)}))
+            results = _get_all(user_id or DEFAULT_USER)
+            pinned = set(_load_meta()["pinned"])
         if not results:
             return "📋 No memories stored."
         out = f"📋 Memories (total {len(results)}):\n\n"
         for i, r in enumerate(results, 1):
-            out += f"{i}. [ID: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}\n"
+            pin = " 📌" if r.get("id") in pinned else ""
+            out += f"{i}. [ID: {r.get('id', 'N/A')}]{pin} {r.get('memory', '(empty)')}\n"
         return out
     except Exception as e:
         return f"❌ List failed: {e}"
@@ -481,9 +609,72 @@ def delete_memory(memory_id: str) -> str:
     try:
         with _store_lock:
             m.delete(memory_id)
+            meta = _load_meta()
+            was_pinned = memory_id in meta["pinned"]
+            if was_pinned:
+                meta["pinned"] = [i for i in meta["pinned"] if i != memory_id]
+            meta["access"].pop(memory_id, None)
+            _save_meta(meta)
+            if was_pinned:
+                _sync_core_file(_core_items(meta))
         return f"✅ Deleted memory '{memory_id}'."
     except Exception as e:
         return f"❌ Delete failed: {e}"
+
+
+@mcp.tool()
+def pin_memory(memory_id: str) -> str:
+    """Pin a memory into CORE memory: the small always-on set that is mirrored to a
+    file the user includes in always-on rules (AGENTS.md / CLAUDE.md), so it reaches
+    EVERY session without retrieval. Pin only identity-level durable facts needed in
+    most sessions (environment, key paths, core preferences, project identity).
+    Core is strictly bounded; if the budget is exceeded, unpin or shorten an entry
+    first. The memory stays searchable either way."""
+    try:
+        with _store_lock:
+            text = _memory_text(memory_id)
+            if text is None:
+                return f"❌ No memory with id '{memory_id}'."
+            meta = _load_meta()
+            if memory_id in meta["pinned"]:
+                return f"📌 Already pinned: [id: {memory_id}] {text}"
+            items = _core_items(meta)
+            used = sum(len(it["memory"]) for it in items)
+            if used + len(text) > CORE_BUDGET:
+                listing = "\n".join(
+                    f"  • ({len(it['memory'])} chars) [id: {it['id']}] {it['memory']}"
+                    for it in items
+                )
+                return (f"❌ Core budget exceeded: {used}+{len(text)} > {CORE_BUDGET} chars. "
+                        f"Core loads into EVERY session, so it must stay small. "
+                        f"Unpin or shorten one of:\n{listing}")
+            meta["pinned"].append(memory_id)
+            _save_meta(meta)
+            items.append({"id": memory_id, "memory": text})
+            _sync_core_file(items)
+        return (f"📌 Pinned to core ({used + len(text)}/{CORE_BUDGET} chars used): {text}\n"
+                f"Core file: {CORE_FILE} — reference it from an always-on rules file "
+                f"(AGENTS.md / CLAUDE.md / .cursorrules) so it loads every session.")
+    except Exception as e:
+        return f"❌ Pin failed: {e}"
+
+
+@mcp.tool()
+def unpin_memory(memory_id: str) -> str:
+    """Remove a memory from CORE (always-on) memory. The memory itself stays stored
+    and searchable; it just stops loading into every session. Use when a core fact
+    no longer earns its always-on slot, or to free core budget."""
+    try:
+        with _store_lock:
+            meta = _load_meta()
+            if memory_id not in meta["pinned"]:
+                return f"❌ Memory '{memory_id}' is not pinned."
+            meta["pinned"] = [i for i in meta["pinned"] if i != memory_id]
+            _save_meta(meta)
+            _sync_core_file(_core_items(meta))
+        return f"✅ Unpinned '{memory_id}' (still stored and searchable)."
+    except Exception as e:
+        return f"❌ Unpin failed: {e}"
 
 
 # ---- low-friction recall: MCP prompt + resources -----------------------------
@@ -499,21 +690,80 @@ def load_context(query: str = "") -> str:
     memories are listed."""
     uid = DEFAULT_USER
     with _store_lock:
+        core = _core_items(_load_meta())
         if query.strip():
             results = _semantic_search(query, uid, SEARCH_TOPK)
+            _record_access([r.get("id") for r in results])
             head = f"Relevant memories for '{query}' (most relevant first):"
         else:
-            results = _results(m.get_all(filters={"user_id": uid}))[:SEARCH_TOPK]
+            results = _get_all(uid)[:SEARCH_TOPK]
             head = "Stored memories:"
-    if not results:
+    core_ids = {it["id"] for it in core}
+    results = [r for r in results if r.get("id") not in core_ids]
+    if not core and not results:
         return ("No stored memories yet. As you work, call add_memory to save durable "
                 "facts (decisions, configs, paths, preferences) for next time.")
-    lines = [head, ""]
-    lines += [f"- [id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}" for r in results]
+    lines = []
+    if core:
+        lines += ["Core memory (always-on):", ""]
+        lines += [f"- [id: {it['id']}] 📌 {it['memory']}" for it in core]
+        lines += [""]
+    if results:
+        lines += [head, ""]
+        lines += [f"- [id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}" for r in results]
     lines += ["",
               "Treat these as established context. If any is now wrong/outdated, "
               "reconcile with update_memory/delete_memory; save new durable facts with "
               "add_memory."]
+    return "\n".join(lines)
+
+
+@mcp.prompt()
+def curate_memories() -> str:
+    """Run a maintenance pass over long-term memory, driven by YOU (the agent).
+    Invoke periodically -- or whenever memory feels noisy -- to merge duplicates,
+    drop stale facts, tighten wording, and keep the always-on core small and
+    current. Usage stats are provided as curation hints."""
+    uid = DEFAULT_USER
+    with _store_lock:
+        results = _get_all(uid)
+        meta = _load_meta()
+        existing = {r.get("id") for r in results}
+        stale_stats = [mid for mid in list(meta["access"])
+                       if mid not in existing and _memory_text(mid) is None]
+        if stale_stats:
+            for mid in stale_stats:
+                meta["access"].pop(mid, None)
+            _save_meta(meta)
+        core_ids = {it["id"] for it in _core_items(meta)}
+    if not results:
+        return "Nothing to curate: no memories stored."
+    lines = [
+        f"Memory curation pass — {len(results)} memories, {len(core_ids)} pinned "
+        f"to core (budget {CORE_BUDGET} chars).",
+        "",
+        "Inventory (📌 = pinned to core; used = times retrieved, last = last retrieval):",
+        "",
+    ]
+    for r in results:
+        mid = r.get("id")
+        st = meta["access"].get(mid) or {}
+        created = (r.get("created_at") or "?")[:10]
+        pin = " 📌" if mid in core_ids else ""
+        lines.append(f"- [id: {mid}]{pin} (created {created}, used {st.get('count', 0)}x, "
+                     f"last {st.get('last') or 'never'}) {r.get('memory', '(empty)')}")
+    lines += [
+        "",
+        "Curate now, one change at a time, using the tools:",
+        "1. MERGE near-duplicates: update_memory(keep_id, merged_text) then delete_memory(other_id).",
+        "2. DELETE memories that are wrong, obsolete, superseded, or one-off trivia.",
+        "3. REWRITE vague or bloated entries into one atomic, self-contained fact (update_memory).",
+        "4. CORE: pin_memory the few durable facts needed in most sessions (a high "
+        "'used' count is a hint); unpin_memory core entries that no longer earn their "
+        "always-on slot. Stay within the budget.",
+        "5. Low usage alone is NOT a reason to delete: keep facts that are still true and durable.",
+        "Finish with a short summary of what changed.",
+    ]
     return "\n".join(lines)
 
 
@@ -522,10 +772,20 @@ def memory_all() -> str:
     """All stored memories for the default user, as readable text (with IDs)."""
     uid = DEFAULT_USER
     with _store_lock:
-        results = _results(m.get_all(filters={"user_id": uid}))
+        results = _get_all(uid)
     if not results:
         return "No memories stored."
     return "\n".join(f"[id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}" for r in results)
+
+
+@mcp.resource("memory://core")
+def memory_core() -> str:
+    """Core (always-on) memories: the pinned set, also mirrored to the core file."""
+    with _store_lock:
+        items = _core_items(_load_meta())
+    if not items:
+        return "Core memory is empty. Pin identity-level durable facts with pin_memory(id)."
+    return "\n".join(f"[id: {it['id']}] {it['memory']}" for it in items)
 
 
 @mcp.resource("memory://search/{query}")
@@ -534,12 +794,19 @@ def memory_search(query: str) -> str:
     uid = DEFAULT_USER
     with _store_lock:
         results = _semantic_search(query, uid, SEARCH_TOPK)
+        _record_access([r.get("id") for r in results])
     if not results:
         return f"No results for '{query}'."
     return "\n".join(f"[id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}" for r in results)
 
 
 if __name__ == "__main__":
+    # Refresh the core file at startup so it reflects the store even after
+    # offline changes (migrations, restores) or a deleted/missing file.
+    try:
+        _sync_core_file(_core_items(_load_meta()))
+    except Exception as e:
+        logger.warning("core file startup sync failed: %s", e)
     transport = os.environ.get("MEM0_MCP_TRANSPORT", "stdio")
     if transport == "http":
         _idle_enabled = True   # enable idle auto-shutdown for the shared backend

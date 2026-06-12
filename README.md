@@ -21,6 +21,9 @@ opens and shuts itself off (freeing RAM) when you're done.
   closing the last client lets it idle-exit and free ~200 MB. No manual toggle.
 - 🤝 **Multi-client safe.** Kiro, Claude Desktop, Cursor, … all share **one**
   backend process — a single Chroma writer, no duplicate servers, no zombies.
+- 📌 **Always-on core memory.** Pin the few must-not-forget facts; they're
+  mirrored to a file your rules load every session, so they're always in context
+  — no search required.
 
 ---
 
@@ -99,8 +102,10 @@ starts and loads the embedder); after that it's instant.
 | `add_memory(text, user_id?)` | Store a fact verbatim. Returns the nearest existing memories so you can reconcile. |
 | `update_memory(id, text)` | Replace/merge an existing memory (avoid duplicates). |
 | `delete_memory(id)` | Remove an outdated or contradicted memory. |
-| `search_memories(query, user_id?)` | Semantic search; returns memories **with IDs**. |
-| `list_memories(user_id?)` | List everything stored (with IDs). |
+| `search_memories(query, user_id?)` | Semantic search; returns memories **with IDs** (📌 marks pinned/core). |
+| `list_memories(user_id?)` | List everything stored (with IDs; 📌 marks pinned/core). |
+| `pin_memory(id)` | Pin a memory into always-on **core** (mirrored to a file your rules load every session). Bounded by `MEM0_CORE_BUDGET`. |
+| `unpin_memory(id)` | Remove from core; the memory stays stored and searchable. |
 
 **Prompt & resources** (for clients that surface them) make recall low-friction —
 no need for the agent to *remember* to search:
@@ -108,7 +113,9 @@ no need for the agent to *remember* to search:
 | Kind | Name | What it does |
 |------|------|--------------|
 | Prompt | `load_context(query?)` | Pull relevant memories into the conversation as context — invoke at the start of a task so the agent recalls instead of re-asking. No query = list all. |
+| Prompt | `curate_memories()` | Maintenance pass: full inventory + usage stats, with instructions for the agent to merge duplicates, drop stale facts, rewrite, and re-balance core. |
 | Resource | `memory://all` | All stored memories (with IDs). |
+| Resource | `memory://core` | The pinned always-on **core** set. |
 | Resource | `memory://search/{query}` | Hybrid-ranked memories for `query`. |
 
 ---
@@ -142,6 +149,47 @@ aren't burned re-explaining. Three layers push for that:
    - Reconcile, don't duplicate: update_memory to refine/merge; delete_memory when a memory becomes wrong.
    - Never store secrets (passwords, API keys, tokens).
    ```
+
+---
+
+## Core memory (always-on)
+
+Retrieval has one structural gap: the agent has to *decide* to search. **Core
+memory** closes it. Pin the handful of must-not-forget facts — project identity,
+key paths, environment, core preferences — and they're mirrored to a plain file,
+`~/.mem0-mcp/CORE_MEMORY.md`, that your always-on rules load **every session**.
+Those facts reach the agent with no tool call and no retrieval luck.
+
+- **Pin / unpin.** `pin_memory(id)` adds a memory to core; `unpin_memory(id)`
+  removes it. Either way the memory stays stored and searchable; pinned entries
+  show 📌 in `search_memories` / `list_memories`.
+- **Bounded by design.** Core is capped at `MEM0_CORE_BUDGET` characters
+  (default 4000). It loads into *every* session, so the cap keeps that always-on
+  block small — pinning past it is refused until you unpin or shorten.
+- **Activate it once.** Add a line to your always-on rules file so the agent
+  reads the mirror at the start of every session:
+
+  ```markdown
+  ## Core memory (always-on)
+  At the START of every session, read ~/.mem0-mcp/CORE_MEMORY.md — the user's
+  pinned, always-on core memory. (Claude Code: import it with `@~/.mem0-mcp/CORE_MEMORY.md`.)
+  ```
+
+The mirror file is auto-generated (re-synced on every pin/unpin and at backend
+startup) — never edit it by hand. Core is also exposed as the `memory://core`
+resource and shown at the top of `load_context`.
+
+---
+
+## Keeping memory tidy (curation)
+
+Every search quietly records lightweight usage stats — retrieval count and
+last-used date — per memory. The `curate_memories` prompt turns those into a
+maintenance pass: it lays out the full inventory (📌 pinned, created date, usage)
+and asks the agent to merge duplicates, drop stale facts, tighten wording, and
+re-balance what deserves an always-on core slot — one tool call at a time. Run it
+periodically or whenever memory feels noisy. (Low usage alone is never a reason
+to delete: durable facts stay.)
 
 ---
 
@@ -230,6 +278,9 @@ writer even with several clients open at once.
 | `MEM0_DEFAULT_USER` | `developer_workspace` | default `user_id` |
 | `MEM0_RELATED_TOPK` | `3` | nearest memories `add_memory` surfaces |
 | `MEM0_SEARCH_TOPK` | `10` | results `search_memories` returns |
+| `MEM0_CORE_BUDGET` | `4000` | max total chars of pinned (core) memories; pinning past it is refused |
+| `MEM0_CORE_FILE` | `~/.mem0-mcp/CORE_MEMORY.md` | always-on core mirror file (rules files read this) |
+| `MEM0_META_FILE` | `~/.mem0-mcp/memory_meta.json` | sidecar: pin state + per-memory usage stats |
 | `MEM0_HYBRID_SEARCH` | `1` | hybrid dense+lexical retrieval; `0` = dense only |
 | `MEM0_FUSION` | `rescue` | `rescue` (non-regressing) or `rrf` (aggressive) |
 | `MEM0_RRF_K` | `60` | RRF constant (used only when `MEM0_FUSION=rrf`) |
@@ -284,7 +335,14 @@ renamed to `local-mem0-mcp`.
 **Does it need an LLM or API key?** No. Only a local embedder, which downloads
 once and then runs offline.
 
-**Where is my data?** `~/.mem0-mcp/chroma`. Uninstalling keeps it.
+**What's "core memory"?** Regular memories surface only when searched; pinned
+*core* memories load into **every** session via `~/.mem0-mcp/CORE_MEMORY.md` (see
+[Core memory](#core-memory-always-on)). Use `pin_memory` for the few facts you
+always want in context.
+
+**Where is my data?** `~/.mem0-mcp/chroma` (vectors), plus
+`~/.mem0-mcp/CORE_MEMORY.md` (pinned-core mirror) and
+`~/.mem0-mcp/memory_meta.json` (pin state + usage stats). Uninstalling keeps them.
 
 **Can I run several clients at once?** Yes — they all share the one backend
 (single Chroma writer).

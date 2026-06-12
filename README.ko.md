@@ -21,6 +21,8 @@ LLM도, API 키도, 클라우드도 — 그리고 켜고 끄는 스위치도 없
   마지막 클라이언트를 닫으면 idle-exit하며 ~200MB를 반환합니다. 수동 토글이 없습니다.
 - 🤝 **다중 클라이언트 안전.** Kiro, Claude Desktop, Cursor … 모두 **하나의** 백엔드
   프로세스를 공유합니다 — 단일 Chroma writer, 중복 서버 없음, 좀비 없음.
+- 📌 **상시(always-on) 코어 메모리.** 절대 잊으면 안 되는 핵심 몇 개를 고정(pin)하면
+  파일로 미러링되어 룰 파일이 매 세션 로드합니다 — 검색 없이 항상 컨텍스트에 있습니다.
 
 ---
 
@@ -98,8 +100,10 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 | `add_memory(text, user_id?)` | 사실을 그대로 저장. 조정(reconcile)할 수 있도록 가장 가까운 기존 메모리를 함께 반환. |
 | `update_memory(id, text)` | 기존 메모리를 교체/병합(중복 방지). |
 | `delete_memory(id)` | 오래되었거나 모순되는 메모리 제거. |
-| `search_memories(query, user_id?)` | 시맨틱 검색; 메모리를 **ID와 함께** 반환. |
-| `list_memories(user_id?)` | 저장된 모든 것을 나열(ID 포함). |
+| `search_memories(query, user_id?)` | 시맨틱 검색; 메모리를 **ID와 함께** 반환(📌는 코어/고정 표시). |
+| `list_memories(user_id?)` | 저장된 모든 것을 나열(ID 포함; 📌는 코어/고정 표시). |
+| `pin_memory(id)` | 메모리를 상시 **코어**로 고정(룰 파일이 매 세션 로드하는 파일로 미러링). `MEM0_CORE_BUDGET`로 제한. |
+| `unpin_memory(id)` | 코어에서 해제; 메모리는 그대로 저장·검색됨. |
 
 **프롬프트 & 리소스** (지원하는 클라이언트에서 노출) — 에이전트가 검색을 *기억해서*
 호출할 필요 없이 회상을 저마찰로 만들어 줍니다:
@@ -107,7 +111,9 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 | 종류 | 이름 | 하는 일 |
 |------|------|--------------|
 | 프롬프트 | `load_context(query?)` | 관련 메모리를 대화에 컨텍스트로 끌어옴 — 작업 시작 시 호출하면 에이전트가 다시 묻지 않고 회상. query 없으면 전체 나열. |
+| 프롬프트 | `curate_memories()` | 유지보수 패스: 전체 인벤토리 + 사용 통계와 함께, 중복 병합·오래된 사실 삭제·재작성·코어 재조정을 에이전트에게 지시. |
 | 리소스 | `memory://all` | 저장된 모든 메모리(ID 포함). |
+| 리소스 | `memory://core` | 고정된 상시 **코어** 집합. |
 | 리소스 | `memory://search/{query}` | `query`에 대한 하이브리드 랭킹 메모리. |
 
 ---
@@ -140,6 +146,46 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
    - Reconcile, don't duplicate: update_memory to refine/merge; delete_memory when a memory becomes wrong.
    - Never store secrets (passwords, API keys, tokens).
    ```
+
+---
+
+## 코어 메모리 (상시·always-on)
+
+검색 기반 메모리에는 구조적 약점이 하나 있습니다: 에이전트가 검색하기로 *결정*해야
+한다는 것. **코어 메모리**가 그 틈을 메웁니다. 절대 잊으면 안 되는 핵심 몇 개(프로젝트
+정체성, 핵심 경로, 환경, 핵심 선호)를 고정하면 평범한 파일 `~/.mem0-mcp/CORE_MEMORY.md`로
+미러링되고, 이 파일을 여러분의 상시 룰이 **매 세션** 로드합니다. 그 사실들은 툴 호출도,
+검색 운(運)도 없이 에이전트에게 도달합니다.
+
+- **고정/해제.** `pin_memory(id)`로 코어에 추가, `unpin_memory(id)`로 해제합니다.
+  어느 쪽이든 메모리 자체는 그대로 저장·검색되며, 고정된 항목은 `search_memories` /
+  `list_memories`에서 📌로 표시됩니다.
+- **설계상 제한됨.** 코어는 `MEM0_CORE_BUDGET`자(기본 4000)로 상한이 있습니다. *매*
+  세션에 로드되므로 이 상한이 상시 블록을 작게 유지합니다 — 초과해서 고정하려 하면
+  해제하거나 줄이기 전까지 거부됩니다.
+- **한 번만 활성화.** 상시 룰 파일에 한 줄을 추가해 에이전트가 매 세션 시작 시 미러를
+  읽게 하세요:
+
+  ```markdown
+  ## Core memory (always-on)
+  At the START of every session, read ~/.mem0-mcp/CORE_MEMORY.md — the user's
+  pinned, always-on core memory. (Claude Code: import it with `@~/.mem0-mcp/CORE_MEMORY.md`.)
+  ```
+
+미러 파일은 자동 생성됩니다(고정/해제마다, 그리고 백엔드 시작 시 재동기화) — 손으로
+편집하지 마세요. 코어는 `memory://core` 리소스로도 노출되고 `load_context` 상단에도
+표시됩니다.
+
+---
+
+## 메모리 정리(큐레이션)
+
+검색할 때마다 메모리별 가벼운 사용 통계(검색된 횟수 + 마지막 사용일)가 조용히
+기록됩니다. `curate_memories` 프롬프트는 이를 유지보수 패스로 바꿉니다: 전체 인벤토리
+(📌 고정, 생성일, 사용량)를 펼쳐 놓고, 중복 병합·오래된 사실 삭제·문구 다듬기·상시
+코어 슬롯 재조정을 에이전트가 한 번에 하나씩 수행하도록 합니다. 주기적으로, 또는
+메모리가 어수선하다 싶을 때 실행하세요. (사용량이 적다는 것만으로는 삭제 이유가 되지
+않습니다: 여전히 참인 영속적 사실은 유지합니다.)
 
 ---
 
@@ -225,6 +271,9 @@ Chroma writer는 정확히 하나뿐입니다.
 | `MEM0_DEFAULT_USER` | `developer_workspace` | 기본 `user_id` |
 | `MEM0_RELATED_TOPK` | `3` | `add_memory`가 함께 보여주는 인접 메모리 개수 |
 | `MEM0_SEARCH_TOPK` | `10` | `search_memories`가 반환하는 결과 개수 |
+| `MEM0_CORE_BUDGET` | `4000` | 고정(코어) 메모리의 총 글자 수 상한; 초과 고정은 거부 |
+| `MEM0_CORE_FILE` | `~/.mem0-mcp/CORE_MEMORY.md` | 상시 코어 미러 파일(룰 파일이 읽음) |
+| `MEM0_META_FILE` | `~/.mem0-mcp/memory_meta.json` | 사이드카: 고정 상태 + 메모리별 사용 통계 |
 | `MEM0_HYBRID_SEARCH` | `1` | 하이브리드 dense+렉시컬 검색; `0`이면 dense 전용 |
 | `MEM0_FUSION` | `rescue` | `rescue`(비후퇴) 또는 `rrf`(공격적) |
 | `MEM0_RRF_K` | `60` | RRF 상수(`MEM0_FUSION=rrf`일 때만 사용) |
@@ -276,7 +325,13 @@ Chroma writer는 정확히 하나뿐입니다.
 **LLM이나 API 키가 필요한가요?** 아니요. 로컬 임베더만 필요하며, 한 번 다운로드된 뒤
 오프라인으로 동작합니다.
 
-**제 데이터는 어디에 있나요?** `~/.mem0-mcp/chroma`. 제거(uninstall)해도 유지됩니다.
+**"코어 메모리"가 뭔가요?** 일반 메모리는 검색할 때만 표면화되지만, 고정된 *코어*
+메모리는 `~/.mem0-mcp/CORE_MEMORY.md`를 통해 **매** 세션 로드됩니다(아래 "코어 메모리"
+섹션 참고). 항상 컨텍스트에 두고 싶은 핵심 몇 개에는 `pin_memory`를 쓰세요.
+
+**제 데이터는 어디에 있나요?** `~/.mem0-mcp/chroma`(벡터)와 더불어
+`~/.mem0-mcp/CORE_MEMORY.md`(코어 미러), `~/.mem0-mcp/memory_meta.json`(고정 상태 +
+사용 통계). 제거(uninstall)해도 유지됩니다.
 
 **여러 클라이언트를 동시에 실행할 수 있나요?** 네 — 모두 하나의 백엔드를 공유합니다
 (단일 Chroma writer).
