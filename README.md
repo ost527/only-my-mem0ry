@@ -1,5 +1,7 @@
 # local-mem0-mcp
 
+**English** | [한국어](README.ko.md)
+
 **A fully local, zero-config [Mem0](https://github.com/mem0ai/mem0) memory server for MCP clients on macOS.**
 No LLM, no API key, no cloud — and no switch to flip. It starts when your IDE/CLI
 opens and shuts itself off (freeing RAM) when you're done.
@@ -126,6 +128,8 @@ verbatim — so writes are instant and deterministic, with no model call.
    already up, then forwards tool calls and sends a periodic keepalive.
 3. You close the client → the proxy dies → with nothing keeping it warm, the
    backend **idle-exits** after `MEM0_IDLE_TIMEOUT` seconds and frees its RAM.
+   (It waits for any in-flight memory operation to finish first, so a write is
+   never cut off mid-flight.)
 4. Open any client again → the proxy starts the backend again.
 
 Every proxy forwards to the **same** backend, so there is exactly one Chroma
@@ -148,6 +152,7 @@ writer even with several clients open at once.
 | `MEM0_COLLECTION` | `mem0` | Chroma collection name |
 | `MEM0_DEFAULT_USER` | `developer_workspace` | default `user_id` |
 | `MEM0_RELATED_TOPK` | `3` | nearest memories `add_memory` surfaces |
+| `MEM0_SEARCH_TOPK` | `10` | results `search_memories` returns |
 | `MEM0_MCP_PORT` | `8765` | backend HTTP port (must match the proxy) |
 
 **Proxy** (`server/mem0_proxy.py`; set via the `env` block of your MCP config):
@@ -171,7 +176,14 @@ writer even with several clients open at once.
 - **One shared HTTP backend.** Plain MCP stdio spawns a *separate* server per
   client — multiple clients would open the same Chroma store with multiple
   writers (lock/corruption risk) and can orphan into zombie processes. A single
-  shared backend gives one writer and no duplicates.
+  shared backend gives one writer and no duplicates. Inside that backend a single
+  global lock serializes **every** memory operation (reads *and* writes), so
+  concurrent calls from multiple clients can never interleave or corrupt the
+  store — they queue and run one at a time. An OS-level file lock on the store
+  directory hard-enforces the single writer: a second backend pointed at the same
+  store refuses to start rather than risk corruption. (Data-loss safety is
+  prioritized over throughput here; memory ops are fast and infrequent, so the
+  serialization is imperceptible.)
 - **A per-client stdio proxy for lifecycle.** The proxy is lightweight (no
   embedder/Chroma) and its lifetime tracks the client, so the backend can start
   on launch and stop on close — the on-demand behaviour a bare HTTP URL can't
@@ -208,6 +220,13 @@ once and then runs offline.
   `launchctl print gui/$(id -u)/com.mem0mcp.server`. Check
   `~/Library/Logs/mem0-mcp.log`. Start it manually with
   `launchctl kickstart gui/$(id -u)/com.mem0mcp.server`.
+- **Log says "refusing to start a second Chroma writer"** → expected, not a bug:
+  another backend already holds the store's single-writer lock
+  (`~/.mem0-mcp/chroma/.writer.lock`). Only one backend may write at a time. Use
+  the one that's already up, or stop it first
+  (`launchctl kill TERM gui/$(id -u)/com.mem0mcp.server`) before starting another.
+  (During a normal restart the new backend briefly retries while the old one
+  exits, so this only persists if a backend is genuinely still running.)
 - **First write is slow / needs internet** → the embedder downloads once, then
   runs offline.
 - **Search feels off on an older store** → stores created before the cosine

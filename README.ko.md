@@ -1,0 +1,253 @@
+# local-mem0-mcp
+
+[English](README.md) | **한국어**
+
+**macOS의 MCP 클라이언트를 위한 완전 로컬·무설정 [Mem0](https://github.com/mem0ai/mem0) 메모리 서버.**
+LLM도, API 키도, 클라우드도 — 그리고 켜고 끄는 스위치도 없습니다. IDE/CLI를 열면
+시작되고, 다 쓰면 스스로 꺼져(RAM 반환) 줍니다.
+
+> 비공식 커뮤니티 도구 — mem0ai와는 무관합니다.
+
+---
+
+## 핵심 특징
+
+- 🧠 **루프 안에 LLM이 없습니다.** 여러분의 MCP 클라이언트가 *이미* 유능한 LLM이므로,
+  "스마트 메모리" 추론(사실 추출, 중복 제거, 병합, 충돌 해소)은 그쪽이 수행하고 서버는
+  단순한 기본 동작만 호출받습니다. 두 번째 모델도, API 키도, 비용도 없습니다.
+- 💾 **100% 로컬.** 임베딩은 온디바이스(`all-MiniLM-L6-v2`)로 동작하고, 메모리는
+  `~/.mem0-mcp/chroma`의 로컬 **Chroma** 저장소에 보관됩니다. 오프라인에서도 동작합니다.
+- ⚡ **자동 관리 라이프사이클.** 클라이언트를 실행하면 백엔드가 온디맨드로 시작되고,
+  마지막 클라이언트를 닫으면 idle-exit하며 ~200MB를 반환합니다. 수동 토글이 없습니다.
+- 🤝 **다중 클라이언트 안전.** Kiro, Claude Desktop, Cursor … 모두 **하나의** 백엔드
+  프로세스를 공유합니다 — 단일 Chroma writer, 중복 서버 없음, 좀비 없음.
+
+---
+
+## 구성 방식
+
+```
+  ┌────────────┐  stdio   ┌───────────────┐   HTTP 127.0.0.1:8765   ┌─────────────────────┐
+  │ MCP client │─spawns──▶│  mem0_proxy   │────────────────────────▶│  mem0 backend (one) │
+  │ (Kiro/IDE) │◀─tools───│ (per client)  │  forwards + keepalive   │  embed + Chroma     │
+  └────────────┘          └───────────────┘                         └─────────────────────┘
+        │ close ─▶ proxy dies ─▶ backend idle-exits (frees RAM)              ▲ single writer
+   more clients ── each spawns its own lightweight proxy ────────────────────┘ (shared backend)
+```
+
+클라이언트는 작은 **stdio proxy**를 실행합니다. proxy는 **공유 HTTP 백엔드**를
+온디맨드로 시작해 모든 툴 호출을 전달하고, 작업하는 동안 백엔드를 warm하게 유지합니다.
+마지막 클라이언트가 닫히면 백엔드는 스스로 idle-exit합니다.
+
+---
+
+## 요구사항
+
+- **macOS 12+**
+- **Python 3.10+** (`python3`)
+
+이게 전부입니다 — Xcode도, API 키도, 외부 서비스도 필요 없습니다. 임베딩 모델은
+첫 사용 시 한 번만 다운로드(~90MB)되고, 이후로는 완전히 오프라인으로 동작합니다.
+
+---
+
+## 설치
+
+```bash
+git clone https://github.com/ost527/local-mem0-mcp.git
+cd local-mem0-mcp
+./install.sh
+```
+
+`install.sh`는 가상환경을 만들고 의존성(mem0ai, fastmcp, chromadb,
+sentence-transformers)을 설치하며, 백엔드용 **온디맨드** `launchd` 에이전트 하나를
+등록합니다. 복사해서 붙여넣을 MCP config 스니펫을 그대로 출력해 줍니다. 기본값은
+환경변수로 조정할 수 있습니다:
+
+```bash
+MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
+```
+
+---
+
+## MCP 클라이언트 연결
+
+클라이언트의 MCP config(예: `~/.kiro/settings/mcp.json`, Claude Desktop, Cursor)에
+아래를 추가하세요 — **stdio proxy**를 가리키도록 합니다(`install.sh`가 출력한 절대경로 사용):
+
+```json
+{
+  "mcpServers": {
+    "local-mem0-mcp": {
+      "command": "/ABS/PATH/local-mem0-mcp/.venv/bin/python3",
+      "args": ["/ABS/PATH/local-mem0-mcp/server/mem0_proxy.py"]
+    }
+  }
+}
+```
+
+클라이언트를 재시작하세요. 첫 메모리 호출은 몇 초 걸립니다(백엔드가 콜드스타트하며
+임베더를 로드). 그 뒤로는 즉시 동작합니다.
+
+---
+
+## 툴(Tools)
+
+| 툴 | 하는 일 |
+|------|--------------|
+| `add_memory(text, user_id?)` | 사실을 그대로 저장. 조정(reconcile)할 수 있도록 가장 가까운 기존 메모리를 함께 반환. |
+| `update_memory(id, text)` | 기존 메모리를 교체/병합(중복 방지). |
+| `delete_memory(id)` | 오래되었거나 모순되는 메모리 제거. |
+| `search_memories(query, user_id?)` | 시맨틱 검색; 메모리를 **ID와 함께** 반환. |
+| `list_memories(user_id?)` | 저장된 모든 것을 나열(ID 포함). |
+
+---
+
+## 메모리 동작 방식 (클라이언트가 두뇌)
+
+Mem0의 가치는 "스마트 메모리"입니다: 오래 남길 사실을 뽑아낸 뒤 add / update /
+delete 하여 메모리를 중복 없이 일관되게 유지하는 것. 보통은 LLM이 필요하지만 —
+**여러분의 MCP 클라이언트가 바로 그 LLM**이므로, 그쪽이 추론을 수행하며 다음 툴들을
+구동합니다:
+
+1. 대화에서 보존할 가치가 있는 원자적 사실을 **추출**합니다.
+2. 관련/중복/모순되는 항목을 **`search_memories`**로 찾습니다.
+3. **조정(Reconcile)**: `add_memory`(신규) · `update_memory`(정제/병합) ·
+   `delete_memory`(폐기).
+
+3단계를 쉽게 하도록 `add_memory`는 가장 가까운 기존 메모리도 함께 반환합니다.
+내부적으로 서버는 mem0의 `infer=False` 경로를 사용합니다 — 임베딩 후 그대로 저장 —
+따라서 쓰기는 즉각적이고 결정적이며 모델 호출이 없습니다.
+
+---
+
+## 라이프사이클 (자동 시작/종료)
+
+1. IDE/CLI 실행 → 자식 프로세스로 `server/mem0_proxy.py`(stdio)를 spawn합니다.
+2. proxy는 공유 백엔드가 떠 있지 않으면 `launchctl kickstart`로 시작하고, 이후 툴
+   호출을 전달하며 주기적으로 keepalive를 보냅니다.
+3. 클라이언트를 닫으면 → proxy가 죽고 → warm하게 유지할 것이 없으므로 백엔드는
+   `MEM0_IDLE_TIMEOUT`초 뒤 **idle-exit**하며 RAM을 반환합니다. (먼저 진행 중인
+   메모리 작업이 끝나기를 기다리므로, 쓰기가 도중에 끊기는 일이 없습니다.)
+4. 아무 클라이언트나 다시 열면 → proxy가 백엔드를 다시 시작합니다.
+
+모든 proxy는 **같은** 백엔드로 전달하므로, 여러 클라이언트가 동시에 열려 있어도
+Chroma writer는 정확히 하나뿐입니다.
+
+---
+
+## 설정(Configuration)
+
+**백엔드** (`server/mem0_mcp_server.py`; `launchd/com.mem0mcp.server.plist.template`에
+설정한 뒤 `install.sh` 재실행, 또는 `install.sh`에 전달):
+
+| 변수 | 기본값 | 설명 |
+|-----|---------|-------|
+| `MEM0_IDLE_TIMEOUT` | `600` | 백엔드가 종료되기까지의 무활동 시간(초); `0`이면 비활성화 |
+| `MEM0_EMBEDDER_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | 로컬 임베더 |
+| `MEM0_EMBEDDER_DIMS` | `384` | 모델과 일치해야 함 |
+| `MEM0_CHROMA_PATH` | `~/.mem0-mcp/chroma` | 벡터 저장소 위치 |
+| `MEM0_COLLECTION` | `mem0` | Chroma 컬렉션 이름 |
+| `MEM0_DEFAULT_USER` | `developer_workspace` | 기본 `user_id` |
+| `MEM0_RELATED_TOPK` | `3` | `add_memory`가 함께 보여주는 인접 메모리 개수 |
+| `MEM0_SEARCH_TOPK` | `10` | `search_memories`가 반환하는 결과 개수 |
+| `MEM0_MCP_PORT` | `8765` | 백엔드 HTTP 포트(proxy와 일치해야 함) |
+
+**프록시** (`server/mem0_proxy.py`; MCP config의 `env` 블록으로 설정):
+
+| 변수 | 기본값 | 설명 |
+|-----|---------|-------|
+| `MEM0_MCP_PORT` | `8765` | 접속/kickstart할 백엔드 포트 |
+| `MEM0_SERVER_LABEL` | `com.mem0mcp.server` | 온디맨드로 시작할 launchd 라벨 |
+| `MEM0_PROXY_KEEPALIVE` | `clamp(IDLE/3, 5, 120)` | keepalive 핑 간격(초) |
+| `MEM0_BACKEND_READY_TIMEOUT` | `40` | 백엔드가 뜨기를 기다리는 시간(초) |
+
+---
+
+## 설계 이유
+
+- **클라이언트가 곧 지능이다.** 사실을 재추출하려고 *두 번째* 로컬 LLM을 돌리는 것이
+  가장 큰 마찰 요인이었습니다(항상 떠 있어야 하고, 비추론 instruct 모델이어야 하며,
+  느림). 호출하는 에이전트가 이미 LLM이므로 그것을 완전히 버리고 mem0의 그대로-저장
+  경로를 씁니다. (mem0는 내부적으로 여전히 LLM 클라이언트를 만들지만, **절대 호출되지
+  않도록** 배선되어 있습니다.)
+- **하나의 공유 HTTP 백엔드.** 일반적인 MCP stdio는 클라이언트마다 *별도* 서버를
+  spawn합니다 — 여러 클라이언트가 같은 Chroma 저장소를 여러 writer로 열게 되어(락/손상
+  위험) 좀비 프로세스로 남을 수 있습니다. 단일 공유 백엔드는 writer가 하나이고 중복이
+  없습니다. 그 백엔드 안에서는 단일 전역 락이 **모든** 메모리 작업(읽기와 쓰기)을
+  직렬화하므로, 여러 클라이언트의 동시 호출이 서로 끼어들거나 저장소를 손상시킬 수
+  없습니다 — 한 번에 하나씩 줄을 서서 실행됩니다. 또한 저장소 디렉터리에 건 OS 수준
+  파일락이 단일 writer를 강제합니다: 같은 저장소를 가리키는 두 번째 백엔드는 손상을
+  감수하느니 시작을 거부합니다. (여기서는 처리량보다 데이터 손실 안전을 우선합니다;
+  메모리 작업은 빠르고 드물어서 이 직렬화는 체감되지 않습니다.)
+- **라이프사이클을 위한 per-client stdio proxy.** proxy는 가볍고(임베더/Chroma 없음)
+  그 수명이 클라이언트를 따라가므로, 백엔드를 실행 시 시작하고 종료 시 멈출 수 있습니다 —
+  맨 HTTP URL로는 제공할 수 없는 온디맨드 동작입니다.
+- **Idle 자동 종료로 RAM 반환.** 백엔드는 ~200MB를 점유합니다; 마지막 클라이언트가
+  끊기고 잠시 뒤 종료되며 다음 실행 때 다시 시작됩니다.
+
+---
+
+## FAQ
+
+**메뉴바 토글(과 옛 이름)은 어떻게 됐나요?**
+초기 버전에는 메뉴바 on/off 스위치가 있었고 이름은 `mem0-mcp-toggle`이었습니다.
+토글은 위의 자동 라이프사이클로 대체되었고, 프로젝트는 `local-mem0-mcp`로 이름이
+바뀌었습니다.
+
+**LLM이나 API 키가 필요한가요?** 아니요. 로컬 임베더만 필요하며, 한 번 다운로드된 뒤
+오프라인으로 동작합니다.
+
+**제 데이터는 어디에 있나요?** `~/.mem0-mcp/chroma`. 제거(uninstall)해도 유지됩니다.
+
+**여러 클라이언트를 동시에 실행할 수 있나요?** 네 — 모두 하나의 백엔드를 공유합니다
+(단일 Chroma writer).
+
+---
+
+## 문제 해결(Troubleshooting)
+
+- **툴이 안 보임 / 클라이언트가 연결 안 됨** → MCP config의 `command`/`args` 경로가
+  이 repo의 `.venv/bin/python3`와 `server/mem0_proxy.py`를 가리키는지 확인하세요.
+  proxy는 stderr로 로그를 남깁니다(클라이언트의 MCP 로그에서 확인 가능).
+- **백엔드가 시작 안 됨** → 에이전트 등록 확인:
+  `launchctl print gui/$(id -u)/com.mem0mcp.server`. `~/Library/Logs/mem0-mcp.log`를
+  확인하세요. 수동 시작: `launchctl kickstart gui/$(id -u)/com.mem0mcp.server`.
+- **로그에 "refusing to start a second Chroma writer"가 보임** → 버그가 아니라 정상입니다:
+  다른 백엔드가 이미 저장소의 단일 writer 락(`~/.mem0-mcp/chroma/.writer.lock`)을
+  쥐고 있습니다. 한 번에 하나의 백엔드만 쓸 수 있습니다. 이미 떠 있는 것을 쓰거나,
+  다른 것을 시작하기 전에 먼저 멈추세요
+  (`launchctl kill TERM gui/$(id -u)/com.mem0mcp.server`). (정상 재시작 중에는 새
+  백엔드가 옛 것이 종료되는 동안 잠깐 재시도하므로, 백엔드가 실제로 아직 떠 있을 때만
+  이 메시지가 지속됩니다.)
+- **첫 쓰기가 느림 / 인터넷 필요** → 임베더가 한 번 다운로드된 뒤 오프라인으로 동작합니다.
+- **오래된 저장소에서 검색이 이상함** → 코사인 업그레이드 이전에 만들어진 저장소는
+  Chroma 기본 L2 거리를 씁니다; 백엔드를 멈춘 상태에서
+  `.venv/bin/python server/migrate_cosine.py`를 실행해 코사인으로 전환하세요(임베딩을
+  재사용하고, 먼저 백업합니다). 새 설치는 이미 코사인을 사용합니다.
+- **지금 당장 RAM 확보** → 클라이언트를 닫거나(idle-exit됨)
+  `launchctl kill TERM gui/$(id -u)/com.mem0mcp.server`.
+- **로그인한 동안에만 동작** — 부팅 데몬이 아니라 LaunchAgent(사용자별 GUI 세션)입니다.
+- **로그:** `~/Library/Logs/mem0-mcp.log`.
+
+---
+
+## 제거(Uninstall)
+
+```bash
+./uninstall.sh
+```
+
+launchd 백엔드 에이전트(및 레거시 메뉴바 토글)를 제거합니다. 저장된 메모리
+(`~/.mem0-mcp/chroma`)와 venv는 유지합니다.
+
+---
+
+## 라이선스
+
+MIT — [LICENSE](LICENSE) 참고. 다음을 기반으로 만들어졌습니다:
+[mem0ai/mem0](https://github.com/mem0ai/mem0),
+[FastMCP](https://github.com/jlowin/fastmcp),
+[Chroma](https://github.com/chroma-core/chroma),
+[sentence-transformers](https://github.com/UKPLab/sentence-transformers); 각
+프로젝트는 자체 라이선스를 따릅니다.

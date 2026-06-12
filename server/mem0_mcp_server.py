@@ -37,9 +37,11 @@ Env vars (all optional):
 """
 import os
 import time
+import fcntl
 import signal
 import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastmcp import FastMCP
@@ -55,6 +57,45 @@ def _expand(p: str) -> str:
 
 CHROMA_PATH = _expand(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma"))
 os.makedirs(CHROMA_PATH, exist_ok=True)
+
+# Single Chroma writer, enforced at the OS level. The in-process _store_lock only
+# serializes calls WITHIN this backend; it cannot protect against a *second*
+# backend process opening the same store (the worst corruption/data-loss vector).
+# An advisory file lock (fcntl.flock) on a lockfile inside the store dir closes
+# that gap: a second writer simply refuses to start.
+_SINGLE_WRITER_LOCKFILE = os.path.join(CHROMA_PATH, ".writer.lock")
+_single_writer_fh = None  # held open for the process lifetime; OS frees it on exit
+
+
+def _acquire_single_writer_lock(retry_seconds: float = 10.0) -> None:
+    """Acquire an exclusive, non-blocking advisory lock BEFORE Chroma is opened so
+    a second backend can never open the same store concurrently. On contention we
+    retry briefly to ride out the restart race where an old backend is still
+    exiting (launchd KeepAlive=false won't relaunch us, but the proxy re-kickstarts
+    on the next call); if still locked, we log and exit rather than become a second
+    writer. The fd is held for the whole process; the OS releases it on exit."""
+    global _single_writer_fh
+    fh = open(_SINGLE_WRITER_LOCKFILE, "w")
+    deadline = time.monotonic() + max(0.0, retry_seconds)
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                fh.close()
+                logger.error(
+                    "another mem0 backend already holds the writer lock on %s; "
+                    "refusing to start a second Chroma writer", CHROMA_PATH,
+                )
+                raise SystemExit(1)
+            time.sleep(0.25)
+    fh.truncate(0)
+    fh.write(str(os.getpid()))
+    fh.flush()
+    _single_writer_fh = fh
+    logger.info("acquired single-writer lock on %s (pid %d)", CHROMA_PATH, os.getpid())
+
 
 DEFAULT_USER = os.environ.get("MEM0_DEFAULT_USER", "developer_workspace")
 # How many nearest existing memories add_memory surfaces for reconciliation.
@@ -74,20 +115,34 @@ def _touch() -> None:
 
 
 class _ActivityMiddleware(Middleware):
-    """Refresh the activity timestamp on every incoming MCP message."""
+    """Refresh the activity timestamp on every incoming MCP message -- on both
+    arrival and completion, so a long-running operation can't let the idle timer
+    expire while it is still in flight."""
     async def __call__(self, context, call_next):
         _touch()
-        return await call_next(context)
+        try:
+            return await call_next(context)
+        finally:
+            _touch()
 
 
 async def _idle_watchdog() -> None:
     interval = min(30.0, max(5.0, IDLE_TIMEOUT / 4))
     while True:
         await asyncio.sleep(interval)
-        if time.monotonic() - _last_activity > IDLE_TIMEOUT:
-            # Graceful shutdown; launchd won't relaunch (KeepAlive=false).
-            signal.raise_signal(signal.SIGTERM)
-            return
+        if time.monotonic() - _last_activity <= IDLE_TIMEOUT:
+            continue
+        # Data-loss safety: never *start* idle-exit while a store operation is in
+        # flight. A non-blocking acquire that fails means a tool holds the lock
+        # (mid read/write), so defer shutdown to the next cycle rather than risk
+        # interrupting it. (uvicorn's SIGTERM path also drains in-flight requests,
+        # so this is belt-and-suspenders.)
+        if not _store_lock.acquire(blocking=False):
+            continue
+        _store_lock.release()
+        # Graceful shutdown; launchd won't relaunch (KeepAlive=false).
+        signal.raise_signal(signal.SIGTERM)
+        return
 
 
 @asynccontextmanager
@@ -131,6 +186,12 @@ config = {
     },
 }
 
+# Enforce single-writer BEFORE opening Chroma -- but only when this file is run as
+# the backend entry point. Importing the module (tooling/tests, e.g. anything that
+# just wants the tool defs) must not take the lock or block on a running backend.
+if __name__ == "__main__":
+    _acquire_single_writer_lock()
+
 m = Memory.from_config(config)
 
 
@@ -162,6 +223,19 @@ def _results(resp):
 
 # How many results search_memories returns.
 SEARCH_TOPK = int(os.environ.get("MEM0_SEARCH_TOPK", "10"))
+
+
+# Serialize ALL store access (reads AND writes) across every client. FastMCP runs
+# these sync tools in a worker threadpool (run_in_thread=True), so two tool calls
+# can execute concurrently; and because every per-client proxy forwards to this one
+# backend process, this single in-process lock makes every memory operation mutually
+# exclusive -- no concurrent add/search/update/delete can corrupt the shared Chroma
+# index or interleave a non-atomic embed->store. Data-loss safety first: we serialize
+# reads too (a query during an index mutation can crash some HNSW builds). It is a
+# plain Lock: mutual exclusion only, not FIFO fairness (arrival order is not needed).
+# Hold it ONLY at the tool-body level; helpers like _semantic_search must stay
+# lock-free so add_memory (search + add) doesn't deadlock on a non-reentrant Lock.
+_store_lock = threading.Lock()
 
 
 def _semantic_search(query: str, uid: str, limit: int):
@@ -205,10 +279,10 @@ def add_memory(text: str, user_id: str = "") -> str:
     If user_id is omitted, the default user is used."""
     uid = user_id or DEFAULT_USER
     try:
-        # Nearest existing memories (ranked by the corrected distance search).
-        related = _semantic_search(text, uid, RELATED_TOPK)
-
-        added = _results(m.add(text, user_id=uid, infer=False))
+        with _store_lock:
+            # Nearest existing memories (ranked by the corrected distance search).
+            related = _semantic_search(text, uid, RELATED_TOPK)
+            added = _results(m.add(text, user_id=uid, infer=False))
         new_id = added[0].get("id", "N/A") if added else "N/A"
 
         out = [f"✅ Stored (id: {new_id}): {text}"]
@@ -230,7 +304,8 @@ def update_memory(memory_id: str, text: str) -> str:
     Use this during reconciliation when new information updates/merges an existing
     memory, so you don't create duplicates."""
     try:
-        m.update(memory_id, text)
+        with _store_lock:
+            m.update(memory_id, text)
         return f"✅ Updated memory '{memory_id}': {text}"
     except Exception as e:
         return f"❌ Update failed: {e}"
@@ -241,7 +316,8 @@ def search_memories(query: str, user_id: str = "") -> str:
     """Search past memories relevant to a query/keyword. Returns memory IDs so you
     can update_memory / delete_memory them during reconciliation."""
     try:
-        results = _semantic_search(query, (user_id or DEFAULT_USER), SEARCH_TOPK)
+        with _store_lock:
+            results = _semantic_search(query, (user_id or DEFAULT_USER), SEARCH_TOPK)
         if not results:
             return "🔍 No results."
         out = f"🔍 Results for '{query}':\n\n"
@@ -256,7 +332,8 @@ def search_memories(query: str, user_id: str = "") -> str:
 def list_memories(user_id: str = "") -> str:
     """List all stored memories for the (default) user."""
     try:
-        results = _results(m.get_all(filters={"user_id": (user_id or DEFAULT_USER)}))
+        with _store_lock:
+            results = _results(m.get_all(filters={"user_id": (user_id or DEFAULT_USER)}))
         if not results:
             return "📋 No memories stored."
         out = f"📋 Memories (total {len(results)}):\n\n"
@@ -272,7 +349,8 @@ def delete_memory(memory_id: str) -> str:
     """Delete a memory by its ID. Use during reconciliation to remove an outdated
     or contradicted memory."""
     try:
-        m.delete(memory_id)
+        with _store_lock:
+            m.delete(memory_id)
         return f"✅ Deleted memory '{memory_id}'."
     except Exception as e:
         return f"❌ Delete failed: {e}"
