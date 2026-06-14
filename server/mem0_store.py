@@ -8,7 +8,9 @@ and it can be unit-tested without the embedder. Functions that need Chroma
 argument, so chromadb is never imported here.
 """
 import os
+import re
 import json
+import glob
 import time
 import shutil
 import socket
@@ -45,6 +47,7 @@ def load_meta(path: str) -> dict:
         meta = {}
     meta.setdefault("pinned", [])
     meta.setdefault("access", {})
+    meta.setdefault("tags", {})
     return meta
 
 
@@ -55,6 +58,26 @@ def save_meta(path: str, meta: dict) -> None:
         atomic_write(path, json.dumps(meta, ensure_ascii=False, indent=1))
     except OSError as e:
         logger.warning("could not persist memory meta %s: %s", path, e)
+
+
+# ---- tags (lightweight labels for scoping search) ----------------------------
+
+def normalize_tags(tags) -> list:
+    """Normalize a tag spec into a sorted, deduped, lowercased list. Accepts a
+    comma/space-separated string or a list; drops empties and a leading '#'.
+    e.g. "Proj-32min, #infra infra" -> ["infra", "proj-32min"]."""
+    if not tags:
+        return []
+    parts = []
+    items = [tags] if isinstance(tags, str) else list(tags)
+    for it in items:
+        parts.extend(re.split(r"[,\s]+", str(it)))
+    seen = set()
+    for p in parts:
+        t = p.strip().lstrip("#").strip().lower()
+        if t:
+            seen.add(t)
+    return sorted(seen)
 
 
 # ---- core (always-on) memory mirror ------------------------------------------
@@ -99,6 +122,24 @@ def backup_store(path: str) -> str:
     backup = f"{path}.bak.{int(time.time())}"
     shutil.copytree(path, backup)
     return backup
+
+
+def prune_old_backups(path: str, keep: int) -> list:
+    """Delete all but the newest `keep` '<path>.bak.<ts>' backups, returning the
+    removed paths. No-op when keep is falsy or <= 0 (the default behaviour: keep
+    everything). Opt-in; the migration scripts call it via MEM0_BACKUP_KEEP."""
+    if not keep or keep <= 0:
+        return []
+    # 10-digit unix timestamps -> lexical sort == chronological (oldest first).
+    backups = sorted(glob.glob(f"{path}.bak.*"))
+    removed = []
+    for b in backups[:-keep]:
+        try:
+            shutil.rmtree(b)
+            removed.append(b)
+        except OSError:
+            pass
+    return removed
 
 
 def recreate_collection_cosine(client, name: str, ids, embeddings, metadatas, documents=None):

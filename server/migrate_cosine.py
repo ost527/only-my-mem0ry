@@ -15,7 +15,9 @@ A backup is written to <chroma_path>.bak.<timestamp> before migrating.
 import os
 import sys
 
-from mem0_store import expand, is_backend_up, backup_store, recreate_collection_cosine
+from mem0_store import (
+    expand, is_backend_up, backup_store, prune_old_backups, recreate_collection_cosine,
+)
 
 PATH = expand(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma"))
 NAME = os.environ.get("MEM0_COLLECTION", "mem0")
@@ -34,6 +36,9 @@ if not os.path.isdir(PATH):
 
 backup = backup_store(PATH)
 print("backup:", backup)
+# Opt-in: keep only the newest MEM0_BACKUP_KEEP backups (0/unset = keep all).
+for _old in prune_old_backups(PATH, int(os.environ.get("MEM0_BACKUP_KEEP", "0") or "0")):
+    print("pruned old backup:", _old)
 
 client = chromadb.PersistentClient(path=PATH)
 cols = [getattr(c, "name", c) for c in client.list_collections()]

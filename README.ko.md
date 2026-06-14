@@ -2,6 +2,8 @@
 
 [English](README.md) | **한국어**
 
+[![CI](https://github.com/ost527/local-mem0-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ost527/local-mem0-mcp/actions/workflows/ci.yml)
+
 **macOS의 MCP 클라이언트를 위한 완전 로컬·무설정 [Mem0](https://github.com/mem0ai/mem0) 메모리 서버.**
 LLM도, API 키도, 클라우드도 — 그리고 켜고 끄는 스위치도 없습니다. IDE/CLI를 열면
 시작되고, 다 쓰면 스스로 꺼져(RAM 반환) 줍니다.
@@ -97,11 +99,12 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 
 | 툴 | 하는 일 |
 |------|--------------|
-| `add_memory(text, user_id?)` | 사실을 그대로 저장. 조정(reconcile)할 수 있도록 가장 가까운 기존 메모리를 함께 반환. |
+| `add_memory(text, user_id?, tags?)` | 사실을 그대로 저장. 선택적 `tags`(예: 프로젝트명)로 이후 검색 범위를 좁힘. 조정(reconcile)용으로 가장 가까운 기존 메모리를 함께 반환. |
 | `update_memory(id, text)` | 기존 메모리를 교체/병합(중복 방지). |
 | `delete_memory(id)` | 오래되었거나 모순되는 메모리 제거. |
-| `search_memories(query, user_id?)` | 시맨틱 검색; 메모리를 **ID와 함께** 반환(📌는 코어/고정 표시). |
-| `list_memories(user_id?)` | 저장된 모든 것을 나열(ID 포함; 📌는 코어/고정 표시). |
+| `search_memories(query, user_id?, tags?)` | 시맨틱 검색; 선택적 `tags`로 그 태그 중 **하나라도** 가진 메모리로 범위를 좁힘. 메모리를 **ID와 함께** 반환(📌 고정, `#tags` 표시). |
+| `tag_memory(id, tags)` | 메모리의 태그를 설정/교체(빈 문자열이면 제거). 태그는 사이드카에 살아 `update_memory` 후에도 유지. |
+| `list_memories(user_id?)` | 저장된 모든 것을 나열(ID 포함; 📌 고정, `#tags` 표시). |
 | `pin_memory(id)` | 메모리를 상시 **코어**로 고정(룰 파일이 매 세션 로드하는 파일로 미러링). `MEM0_CORE_BUDGET`로 제한. |
 | `unpin_memory(id)` | 코어에서 해제; 메모리는 그대로 저장·검색됨. |
 
@@ -178,6 +181,25 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 
 ---
 
+## 태그 (가벼운 범위 지정)
+
+메모리에 **태그**(짧은 라벨 — 보통 프로젝트명 `32min`이나 영역 `infra`)를 달아 회상을
+한 맥락으로 좁힐 수 있습니다:
+
+- **저장 시 태그 지정**: `add_memory(text, tags="32min, infra")`, 또는 기존 메모리에
+  `tag_memory(id, "32min")`로 라벨링(빈 문자열이면 제거).
+- **검색 범위 좁히기**: `search_memories(query, tags="32min")`는 그 태그 중 **하나라도**
+  가진 메모리만 반환합니다. `tags` 없이 검색하면 전체를 대상으로 하므로, 공통 사실은 모든
+  프로젝트에서 계속 보입니다.
+- 태그는 `search_memories` / `list_memories`에서 `#tag`로 표시되고, HTML 메모리 뷰어에
+  태그 필터가 생깁니다.
+
+태그는 벡터 스토어가 아니라 사이드카(`memory_meta.json`)에 저장되므로 `update_memory`
+후에도 유지되며 임베딩이나 랭킹에 전혀 영향을 주지 않습니다. 하이브리드 검색 위에 얹는
+하드 후처리 필터로, `user_id`(완전 분리)나 상시 **코어** 고정과 상호 보완적입니다.
+
+---
+
 ## 메모리 정리(큐레이션)
 
 검색할 때마다 메모리별 가벼운 사용 통계(검색된 횟수 + 마지막 사용일)가 조용히
@@ -238,6 +260,19 @@ MEM0_EMBEDDER_MODEL=intfloat/multilingual-e5-small MEM0_EMBEDDER_DIMS=384 \
 이중 언어(한/영) 스토어에 좋은 로컬·다국어 옵션(둘 다 384차원):
 `intfloat/multilingual-e5-small`,
 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`.
+
+**측정 결과** — 이중 언어 코퍼스(메모리 31개; 한/영 + 교차언어 쿼리 22개;
+`server/eval_recall.py`). 기본값은 *영어 전용*이라 한국어·교차언어 회상이 약합니다:
+
+| 임베더 (384차원) | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|
+| `all-MiniLM-L6-v2` (기본, ~90MB) | 0.73 | 0.82 | 0.91 | 0.79 |
+| `intfloat/multilingual-e5-small` (~470MB) | **0.86** | **1.00** | **1.00** | **0.92** |
+| `paraphrase-multilingual-MiniLM-L12-v2` | 0.77 | 0.86 | 0.86 | 0.81 |
+
+**한국어 비중이 높거나 이중 언어** 스토어라면 `intfloat/multilingual-e5-small`이 확실한
+선택입니다 — 위 명령으로 재임베딩하세요. 기본 다운로드를 작게 유지하려 가벼운 영어 전용
+모델을 기본값으로 두었으니, 다국어 회상이 필요할 때 의식적으로 전환하세요.
 
 ---
 

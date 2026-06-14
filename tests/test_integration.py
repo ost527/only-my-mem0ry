@@ -73,3 +73,42 @@ def test_update_then_delete_roundtrip(srv):
     res = srv._semantic_search("FOO_VAR", uid, 5)
     assert any("set to 1" in r["memory"] for r in res)
     assert "Deleted" in srv.delete_memory(mid)
+
+
+def test_tag_scope_filters_search(srv):
+    uid = "test_tags"
+    srv.add_memory("uses Redis for caching", user_id=uid, tags="proj-alpha, cache")
+    srv.add_memory("uses Postgres as the main database", user_id=uid, tags="proj-beta")
+    scoped = srv.search_memories("uses", user_id=uid, tags="proj-alpha")
+    assert "Redis" in scoped and "Postgres" not in scoped
+    both = srv.search_memories("uses", user_id=uid)
+    assert "Redis" in both and "Postgres" in both
+
+
+def test_tag_memory_set_and_clear(srv):
+    uid = "test_tagtool"
+    mid = _new_id(srv.add_memory("ephemeral note about X_TOKEN", user_id=uid))
+    assert "Tagged" in srv.tag_memory(mid, "alpha beta")
+    assert "X_TOKEN" in srv.search_memories("X_TOKEN", user_id=uid, tags="alpha")
+    assert "Cleared" in srv.tag_memory(mid, "")
+    assert "No results" in srv.search_memories("X_TOKEN", user_id=uid, tags="alpha")
+
+
+def test_delete_removes_tags(srv):
+    uid = "test_deltags"
+    mid = _new_id(srv.add_memory("temp tagged fact", user_id=uid, tags="zzz"))
+    assert mid in srv._load_meta().get("tags", {})
+    srv.delete_memory(mid)
+    assert mid not in srv._load_meta().get("tags", {})
+
+
+def test_update_resyncs_core_file_for_pinned(srv):
+    uid = "test_updcore"
+    mid = _new_id(srv.add_memory("ORIGINAL fact about PORT 1234", user_id=uid))
+    srv.pin_memory(mid)
+    srv.update_memory(mid, "UPDATED fact about PORT 5678")
+    with open(srv.CORE_FILE, encoding="utf-8") as f:
+        body = f.read()
+    assert "UPDATED fact about PORT 5678" in body
+    assert "ORIGINAL fact about PORT 1234" not in body
+    srv.unpin_memory(mid)

@@ -2,6 +2,8 @@
 
 **English** | [한국어](README.ko.md)
 
+[![CI](https://github.com/ost527/local-mem0-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ost527/local-mem0-mcp/actions/workflows/ci.yml)
+
 **A fully local, zero-config [Mem0](https://github.com/mem0ai/mem0) memory server for MCP clients on macOS.**
 No LLM, no API key, no cloud — and no switch to flip. It starts when your IDE/CLI
 opens and shuts itself off (freeing RAM) when you're done.
@@ -99,11 +101,12 @@ starts and loads the embedder); after that it's instant.
 
 | Tool | What it does |
 |------|--------------|
-| `add_memory(text, user_id?)` | Store a fact verbatim. Returns the nearest existing memories so you can reconcile. |
+| `add_memory(text, user_id?, tags?)` | Store a fact verbatim. Optional `tags` (e.g. a project name) scope later search. Returns the nearest existing memories so you can reconcile. |
 | `update_memory(id, text)` | Replace/merge an existing memory (avoid duplicates). |
 | `delete_memory(id)` | Remove an outdated or contradicted memory. |
-| `search_memories(query, user_id?)` | Semantic search; returns memories **with IDs** (📌 marks pinned/core). |
-| `list_memories(user_id?)` | List everything stored (with IDs; 📌 marks pinned/core). |
+| `search_memories(query, user_id?, tags?)` | Semantic search; optional `tags` scope results to memories carrying **any** of them. Returns memories **with IDs** (📌 marks pinned, `#tags` shown). |
+| `tag_memory(id, tags)` | Set/replace a memory's tags (empty string clears). Tags live in the sidecar, so they survive `update_memory`. |
+| `list_memories(user_id?)` | List everything stored (with IDs; 📌 pinned, `#tags` shown). |
 | `pin_memory(id)` | Pin a memory into always-on **core** (mirrored to a file your rules load every session). Bounded by `MEM0_CORE_BUDGET`. |
 | `unpin_memory(id)` | Remove from core; the memory stays stored and searchable. |
 
@@ -181,6 +184,26 @@ resource and shown at the top of `load_context`.
 
 ---
 
+## Tags (lightweight scoping)
+
+Memories can carry **tags** — short labels, typically a project name (`32min`) or
+area (`infra`) — so you can scope recall to one context:
+
+- **Set tags** when storing: `add_memory(text, tags="32min, infra")`, or label an
+  existing memory with `tag_memory(id, "32min")` (an empty string clears them).
+- **Scope a search**: `search_memories(query, tags="32min")` returns only memories
+  carrying **any** of those tags. Without `tags`, search spans everything — so
+  shared/common facts stay visible across every project.
+- Tags render as `#tag` in `search_memories` / `list_memories`, and the HTML
+  memory viewer gains a tag filter.
+
+Tags live in the sidecar (`memory_meta.json`), **not** in the vector store, so they
+survive `update_memory` and never affect embeddings or ranking. They are a hard
+post-filter layered on top of hybrid search — complementary to `user_id` (a full
+partition) and to pinning a fact into always-on **core**.
+
+---
+
 ## Keeping memory tidy (curation)
 
 Every search quietly records lightweight usage stats — retrieval count and
@@ -243,6 +266,21 @@ MEM0_EMBEDDER_MODEL=intfloat/multilingual-e5-small MEM0_EMBEDDER_DIMS=384 \
 Good local, multilingual-friendly options for a bilingual store (both 384 dims):
 `intfloat/multilingual-e5-small` and
 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`.
+
+**Measured** on a bilingual corpus (31 memories; 22 KO/EN + cross-lingual queries;
+`server/eval_recall.py`). The default is *English-only*, so Korean and cross-lingual
+recall is weaker:
+
+| embedder (384-dim) | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|
+| `all-MiniLM-L6-v2` (default, ~90 MB) | 0.73 | 0.82 | 0.91 | 0.79 |
+| `intfloat/multilingual-e5-small` (~470 MB) | **0.86** | **1.00** | **1.00** | **0.92** |
+| `paraphrase-multilingual-MiniLM-L12-v2` | 0.77 | 0.86 | 0.86 | 0.81 |
+
+For a **Korean-heavy or bilingual** store, `intfloat/multilingual-e5-small` is the
+clear pick — re-embed with the command above. The lightweight English-only model
+stays the default so the out-of-the-box download is small; switch deliberately when
+you need multilingual recall.
 
 ---
 

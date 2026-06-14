@@ -59,6 +59,7 @@ from mem0_store import (
     save_meta,
     render_core_file,
     core_used,
+    normalize_tags,
 )
 from mem0_retrieval import bm25_rank, rrf_merge, fuse_rescue
 
@@ -355,23 +356,39 @@ def _save_meta(meta: dict) -> None:
     save_meta(META_PATH, meta)
 
 
+def _bump_access(meta: dict, ids) -> None:
+    """Mutate `meta` in place: bump per-memory usage stats (retrieval count +
+    last-used date) for each id. Pure mutation, no I/O -- the caller persists. This
+    lets a tool that already holds `meta` record access without a second load."""
+    ids = [i for i in ids if i]
+    if not ids:
+        return
+    today = time.strftime("%Y-%m-%d")
+    for mid in ids:
+        ent = meta["access"].get(mid) or {}
+        ent["count"] = int(ent.get("count", 0)) + 1
+        ent["last"] = today
+        meta["access"][mid] = ent
+
+
 def _record_access(ids) -> None:
-    """Bump per-memory usage stats (retrieval count + last-used date). Best-effort:
-    stats only feed curation hints and must never fail or slow a search."""
+    """Load, bump per-memory usage stats, and persist. Best-effort: stats only feed
+    curation hints and must never fail or slow a search."""
     ids = [i for i in ids if i]
     if not ids:
         return
     try:
         meta = _load_meta()
-        today = time.strftime("%Y-%m-%d")
-        for mid in ids:
-            ent = meta["access"].get(mid) or {}
-            ent["count"] = int(ent.get("count", 0)) + 1
-            ent["last"] = today
-            meta["access"][mid] = ent
+        _bump_access(meta, ids)
         _save_meta(meta)
     except Exception as e:
         logger.debug("access-stats update skipped: %s", e)
+
+
+def _fmt_tags(tagmap: dict, mid) -> str:
+    """Trailing '  #a #b' string for a memory's tags, or '' if it has none."""
+    tg = tagmap.get(mid) or []
+    return ("  " + " ".join(f"#{t}" for t in tg)) if tg else ""
 
 
 def _memory_text(memory_id: str):
@@ -410,7 +427,7 @@ def _sync_core_file(items: list) -> None:
 
 
 @mcp.tool()
-def add_memory(text: str, user_id: str = "") -> str:
+def add_memory(text: str, user_id: str = "", tags: str = "") -> str:
     """Store a memory. Call this THE MOMENT a durable, reusable fact appears --
     a decision, preference, config value, path/identifier, environment quirk, or
     recurring command -- not only at the end of a task. Never store secrets
@@ -422,16 +439,24 @@ def add_memory(text: str, user_id: str = "") -> str:
     - Keep memory consistent (mem0-style): if your new fact UPDATES or merges an
       existing one, call update_memory(id, ...); if it CONTRADICTS/obsoletes one,
       call delete_memory(id). Only add when it is genuinely new.
-    If user_id is omitted, the default user is used."""
+    If user_id is omitted, the default user is used. Optionally pass `tags`
+    (comma/space-separated, e.g. a project name like "32min") to scope later
+    search_memories(tags=...); tags live in the sidecar and survive update_memory."""
     uid = user_id or DEFAULT_USER
     try:
         with _store_lock:
             # Nearest existing memories (ranked by the corrected distance search).
             related = _semantic_search(text, uid, RELATED_TOPK)
             added = _results(m.add(text, user_id=uid, infer=False))
-        new_id = added[0].get("id", "N/A") if added else "N/A"
+            new_id = added[0].get("id", "N/A") if added else "N/A"
+            norm = normalize_tags(tags)
+            if norm and new_id != "N/A":
+                meta = _load_meta()
+                meta["tags"][new_id] = norm
+                _save_meta(meta)
 
-        out = [f"✅ Stored (id: {new_id}): {text}"]
+        tagstr = (" " + " ".join(f"#{t}" for t in norm)) if norm else ""
+        out = [f"✅ Stored (id: {new_id}){tagstr}: {text}"]
         if related:
             out.append("\n🔎 Nearest existing memories — if your new fact "
                        "duplicates / updates / contradicts any, reconcile it:")
@@ -461,23 +486,37 @@ def update_memory(memory_id: str, text: str) -> str:
 
 
 @mcp.tool()
-def search_memories(query: str, user_id: str = "") -> str:
+def search_memories(query: str, user_id: str = "", tags: str = "") -> str:
     """Search the user's long-term memory (shared across all their LLM clients).
     Call this FIRST at the start of a task (with its key terms) and BEFORE asking
     the user for information they may have provided before -- recalling is cheaper
-    than re-asking. Returns memories with IDs so you can update_memory /
-    delete_memory them during reconciliation."""
+    than re-asking. Optionally pass `tags` (comma/space-separated) to scope results
+    to memories carrying ANY of those tags (e.g. a project name). Returns memories
+    with IDs (plus 📌 and #tags) so you can update_memory / delete_memory them."""
     try:
+        uid = user_id or DEFAULT_USER
+        want = set(normalize_tags(tags))
         with _store_lock:
-            results = _semantic_search(query, (user_id or DEFAULT_USER), SEARCH_TOPK)
-            _record_access([r.get("id") for r in results])
-            pinned = set(_load_meta()["pinned"])
+            meta = _load_meta()
+            tagmap = meta.get("tags", {})
+            if want:
+                # Pull a larger pool so the tag post-filter still fills SEARCH_TOPK.
+                pool = _semantic_search(query, uid, max(SEARCH_TOPK * 10, 100))
+                results = [r for r in pool
+                           if want & set(tagmap.get(r.get("id")) or [])][:SEARCH_TOPK]
+            else:
+                results = _semantic_search(query, uid, SEARCH_TOPK)
+            _bump_access(meta, [r.get("id") for r in results])
+            _save_meta(meta)
+            pinned = set(meta["pinned"])
+        scope = (" [tags: " + ", ".join(sorted(want)) + "]") if want else ""
         if not results:
-            return "🔍 No results."
-        out = f"🔍 Results for '{query}':\n\n"
+            return f"🔍 No results.{scope}"
+        out = f"🔍 Results for '{query}'{scope}:\n\n"
         for i, r in enumerate(results, 1):
-            pin = " 📌" if r.get("id") in pinned else ""
-            out += f"{i}. [id: {r.get('id', 'N/A')}]{pin} {r.get('memory', '(empty)')}\n"
+            mid = r.get("id")
+            pin = " 📌" if mid in pinned else ""
+            out += f"{i}. [id: {mid or 'N/A'}]{pin} {r.get('memory', '(empty)')}{_fmt_tags(tagmap, mid)}\n"
         return out
     except Exception as e:
         return f"❌ Search failed: {e}"
@@ -486,17 +525,20 @@ def search_memories(query: str, user_id: str = "") -> str:
 @mcp.tool()
 def list_memories(user_id: str = "") -> str:
     """List all stored memories for the (default) user. Pinned (core) memories are
-    marked with 📌."""
+    marked with 📌, and any tags are shown as #tag."""
     try:
         with _store_lock:
             results = _get_all(user_id or DEFAULT_USER)
-            pinned = set(_load_meta()["pinned"])
+            meta = _load_meta()
+            pinned = set(meta["pinned"])
+            tagmap = meta.get("tags", {})
         if not results:
             return "📋 No memories stored."
         out = f"📋 Memories (total {len(results)}):\n\n"
         for i, r in enumerate(results, 1):
-            pin = " 📌" if r.get("id") in pinned else ""
-            out += f"{i}. [ID: {r.get('id', 'N/A')}]{pin} {r.get('memory', '(empty)')}\n"
+            mid = r.get("id")
+            pin = " 📌" if mid in pinned else ""
+            out += f"{i}. [ID: {mid or 'N/A'}]{pin} {r.get('memory', '(empty)')}{_fmt_tags(tagmap, mid)}\n"
         return out
     except Exception as e:
         return f"❌ List failed: {e}"
@@ -514,12 +556,38 @@ def delete_memory(memory_id: str) -> str:
             if was_pinned:
                 meta["pinned"] = [i for i in meta["pinned"] if i != memory_id]
             meta["access"].pop(memory_id, None)
+            meta["tags"].pop(memory_id, None)
             _save_meta(meta)
             if was_pinned:
                 _sync_core_file(_core_items(meta))
         return f"✅ Deleted memory '{memory_id}'."
     except Exception as e:
         return f"❌ Delete failed: {e}"
+
+
+@mcp.tool()
+def tag_memory(memory_id: str, tags: str = "") -> str:
+    """Set (replace) the tags on an existing memory. Tags are lightweight labels --
+    typically a project name (e.g. "32min") or area (e.g. "infra") -- used to scope
+    search_memories(tags=...). Pass a comma/space-separated string; an EMPTY string
+    clears all tags. Tags live in the sidecar (not the vector store), so they
+    survive update_memory and never affect embeddings."""
+    try:
+        with _store_lock:
+            if _memory_text(memory_id) is None:
+                return f"❌ No memory with id '{memory_id}'."
+            norm = normalize_tags(tags)
+            meta = _load_meta()
+            if norm:
+                meta["tags"][memory_id] = norm
+            else:
+                meta["tags"].pop(memory_id, None)
+            _save_meta(meta)
+        if norm:
+            return f"🏷️  Tagged '{memory_id}': {' '.join('#' + t for t in norm)}"
+        return f"🏷️  Cleared all tags on '{memory_id}'."
+    except Exception as e:
+        return f"❌ Tag failed: {e}"
 
 
 @mcp.tool()

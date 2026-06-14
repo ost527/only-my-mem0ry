@@ -5,7 +5,10 @@ import socket
 from mem0_store import (
     expand, atomic_write, load_meta, save_meta,
     render_core_file, core_used, is_backend_up,
+    normalize_tags, prune_old_backups,
 )
+
+DEFAULTS = {"pinned": [], "access": {}, "tags": {}}
 
 
 class TestExpand:
@@ -38,35 +41,37 @@ class TestAtomicWrite:
 
 class TestMeta:
     def test_missing_file_returns_defaults(self, tmp_path):
-        assert load_meta(str(tmp_path / "nope.json")) == {"pinned": [], "access": {}}
+        assert load_meta(str(tmp_path / "nope.json")) == DEFAULTS
 
     def test_corrupt_file_returns_defaults(self, tmp_path):
         p = tmp_path / "bad.json"
         p.write_text("{not valid json", encoding="utf-8")
-        assert load_meta(str(p)) == {"pinned": [], "access": {}}
+        assert load_meta(str(p)) == DEFAULTS
 
     def test_non_dict_json_returns_defaults(self, tmp_path):
         p = tmp_path / "list.json"
         p.write_text("[1, 2, 3]", encoding="utf-8")
-        assert load_meta(str(p)) == {"pinned": [], "access": {}}
+        assert load_meta(str(p)) == DEFAULTS
 
     def test_roundtrip_preserves_unicode_and_keys(self, tmp_path):
         p = str(tmp_path / "m.json")
         meta = {
             "pinned": ["id1"],
             "access": {"id1": {"count": 2, "last": "2026-06-14"}},
+            "tags": {"id1": ["proj", "infra"]},
             "extra": "쿠팡",
         }
         save_meta(p, meta)
         loaded = load_meta(p)
         assert loaded["pinned"] == ["id1"]
         assert loaded["access"]["id1"]["count"] == 2
+        assert loaded["tags"]["id1"] == ["proj", "infra"]
         assert loaded["extra"] == "쿠팡"
 
     def test_save_empty_dict_then_load_has_defaults(self, tmp_path):
         p = str(tmp_path / "m.json")
         save_meta(p, {})
-        assert load_meta(p) == {"pinned": [], "access": {}}
+        assert load_meta(p) == DEFAULTS
 
 
 class TestRenderCoreFile:
@@ -89,6 +94,49 @@ class TestCoreUsed:
 
     def test_empty_is_zero(self):
         assert core_used([]) == 0
+
+
+class TestNormalizeTags:
+    def test_string_split_lower_dedup_sorted(self):
+        assert normalize_tags("  #32min, Infra infra  proj-x") == ["32min", "infra", "proj-x"]
+
+    def test_list_input_split_and_normalized(self):
+        assert normalize_tags(["A", "b,c", "#a"]) == ["a", "b", "c"]
+
+    def test_strips_leading_hash(self):
+        assert normalize_tags("#tag") == ["tag"]
+
+    def test_empty_inputs(self):
+        assert normalize_tags("") == []
+        assert normalize_tags(None) == []
+        assert normalize_tags([]) == []
+
+
+class TestPruneOldBackups:
+    def _mk(self, tmp_path, *suffixes):
+        store = tmp_path / "chroma"
+        store.mkdir()
+        for s in suffixes:
+            (tmp_path / f"chroma.bak.{s}").mkdir()
+        return str(store)
+
+    def test_keep_zero_is_noop(self, tmp_path):
+        store = self._mk(tmp_path, "1", "2", "3")
+        assert prune_old_backups(store, 0) == []
+        assert len(list(tmp_path.glob("chroma.bak.*"))) == 3
+
+    def test_keeps_newest_n(self, tmp_path):
+        store = self._mk(tmp_path, "1000000001", "1000000002", "1000000003", "1000000004")
+        removed = prune_old_backups(store, 2)
+        assert sorted(os.path.basename(r) for r in removed) == [
+            "chroma.bak.1000000001", "chroma.bak.1000000002"]
+        assert sorted(p.name for p in tmp_path.glob("chroma.bak.*")) == [
+            "chroma.bak.1000000003", "chroma.bak.1000000004"]
+
+    def test_keep_more_than_exist_removes_nothing(self, tmp_path):
+        store = self._mk(tmp_path, "1", "2")
+        assert prune_old_backups(store, 5) == []
+        assert len(list(tmp_path.glob("chroma.bak.*"))) == 2
 
 
 class TestIsBackendUp:

@@ -30,7 +30,9 @@ and the store disagree on the model, search quality collapses.
 import os
 import sys
 
-from mem0_store import expand, is_backend_up, backup_store, recreate_collection_cosine
+from mem0_store import (
+    expand, is_backend_up, backup_store, prune_old_backups, recreate_collection_cosine,
+)
 
 PATH = expand(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma"))
 NAME = os.environ.get("MEM0_COLLECTION", "mem0")
@@ -86,6 +88,9 @@ if NEW_DIMS and int(NEW_DIMS) != dim:
 
 backup = backup_store(PATH)
 print("backup:", backup)
+# Opt-in: keep only the newest MEM0_BACKUP_KEEP backups (0/unset = keep all).
+for _old in prune_old_backups(PATH, int(os.environ.get("MEM0_BACKUP_KEEP", "0") or "0")):
+    print("pruned old backup:", _old)
 
 # Recreate the collection (cosine) and re-add with the new embeddings, preserving
 # ids + metadata so memory IDs and user_id scoping are unchanged.

@@ -70,6 +70,15 @@ CORPUS = {
     # bilingual (KO)
     "ko_launcher": "오라클 A1 화면공유.command 런처가 SSH 터널을 열고 VNC localhost:5900 에 접속한다",
     "ko_crawler": "쿠팡 크롤러는 상세 페이지에 들어가지 않고 검색 결과 카드에서 가격을 수집한다",
+    # semantic Korean: queries will paraphrase these with little/no shared tokens,
+    # so BM25 can't rescue them -- only a Korean-capable embedder retrieves them.
+    "ko_meeting": "팀 주간 회의는 매주 월요일 오전 10시에 진행한다",
+    "ko_db_pw": "프로덕션 데이터베이스 접속 정보는 1Password 'prod-db' 항목에 보관한다",
+    "ko_deadline": "이번 분기 마감일은 9월 말까지이며 그 전에 배포를 끝내야 한다",
+    # cross-lingual: stored in English, asked in Korean (and vice versa). No shared
+    # tokens across scripts, so only a multilingual embedder bridges the gap.
+    "en_backup": "The nightly backup job runs at 2am and uploads snapshots to the NAS",
+    "en_oncall": "The on-call engineer carries the pager for one week at a time",
 }
 
 # query -> set of acceptable labels (a "hit" if any acceptable label is retrieved).
@@ -90,6 +99,14 @@ QUERIES = [
     ("10.0.0.42", {"staging_ip"}),
     ("쿠팡 가격 수집 방식", {"ko_crawler", "crawler_cdp"}),
     ("화면공유 런처", {"ko_launcher"}),
+    # semantic Korean (paraphrase, minimal shared tokens -> BM25 can't help)
+    ("팀 미팅 스케줄", {"ko_meeting"}),
+    ("디비 암호 보관 위치", {"ko_db_pw"}),
+    ("분기 기한이 언제까지", {"ko_deadline"}),
+    # cross-lingual (KO query -> EN fact, EN query -> KO fact)
+    ("야간 백업 몇 시에 도나", {"en_backup"}),
+    ("who is holding the pager this week", {"en_oncall"}),
+    ("when is the weekly team meeting", {"ko_meeting"}),
 ]
 
 K_VALUES = (1, 3, 5)
