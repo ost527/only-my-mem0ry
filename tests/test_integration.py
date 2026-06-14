@@ -112,3 +112,28 @@ def test_update_resyncs_core_file_for_pinned(srv):
     assert "UPDATED fact about PORT 5678" in body
     assert "ORIGINAL fact about PORT 1234" not in body
     srv.unpin_memory(mid)
+
+
+def test_add_memory_warns_on_near_duplicate(srv):
+    uid = "test_dupwarn"
+    srv.add_memory("The staging server is reachable at 10.9.9.9 on port 5432.", user_id=uid)
+    out = srv.add_memory("The staging server is reachable at 10.9.9.9 on port 5432.", user_id=uid)
+    assert "LIKELY DUPLICATE" in out
+
+
+def test_add_memory_quiet_for_distinct(srv):
+    uid = "test_nodup"
+    srv.add_memory("Project Alpha is written in Rust and ships on Fridays.", user_id=uid)
+    out = srv.add_memory("Unrelated note: the coffee machine sits on the third floor.", user_id=uid)
+    assert "LIKELY DUPLICATE" not in out
+
+
+def test_duplicate_clusters_groups_near_identical(srv):
+    uid = "test_dupclust"
+    a = _new_id(srv.add_memory("The nightly backup runs at 2am and uploads to the NAS.", user_id=uid))
+    b = _new_id(srv.add_memory("The nightly backup runs at 2 a.m. and uploads to the NAS.", user_id=uid))
+    c = _new_id(srv.add_memory("The office cat Mochi naps every afternoon by the window.", user_id=uid))
+    clusters = srv._duplicate_clusters(uid, srv._DUP_THRESHOLD, srv._DUP_MAX_DOCS)
+    cluster_ids = [{it["id"] for it in g} for g in clusters]
+    assert any({a, b} <= cids for cids in cluster_ids), "near-identical memories should cluster"
+    assert all(c not in cids for cids in cluster_ids), "unrelated memory should not cluster"

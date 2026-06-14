@@ -100,3 +100,32 @@ def fuse_rescue(dense: list, lexical: list, limit: int):
         seen.add(mid)
         out.append(it)
     return out[:limit]
+
+
+def cluster_by_pairs(pairs):
+    """Group ids into connected components from (id_a, id_b) similarity pairs, via
+    union-find. Returns clusters (each a sorted list of >=2 ids), ordered by
+    descending size then first id. Pure + deterministic; used to surface
+    near-duplicate memory clusters for curation."""
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:  # path compression
+            parent[x], x = root, parent[x]
+        return root
+
+    for a, b in pairs:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    groups = {}
+    for node in list(parent):
+        groups.setdefault(find(node), []).append(node)
+    clusters = [sorted(g) for g in groups.values() if len(g) >= 2]
+    clusters.sort(key=lambda g: (-len(g), g[0]))
+    return clusters

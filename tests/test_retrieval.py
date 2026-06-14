@@ -1,5 +1,5 @@
 """Unit tests for the pure retrieval primitives (no embedder / Chroma needed)."""
-from mem0_retrieval import tokenize, bm25_rank, rrf_merge, fuse_rescue
+from mem0_retrieval import tokenize, bm25_rank, rrf_merge, fuse_rescue, cluster_by_pairs
 
 
 def _corpus(*pairs):
@@ -97,3 +97,25 @@ class TestFuseRescue:
     def test_dedups_overlap(self):
         out = fuse_rescue(_corpus(("d1", "x")), _corpus(("d1", "x")), 10)
         assert len(out) == 1
+
+
+class TestClusterByPairs:
+    def test_transitive_merge(self):
+        cl = cluster_by_pairs([("a", "b"), ("b", "c"), ("d", "e")])
+        assert [set(c) for c in cl] == [{"a", "b", "c"}, {"d", "e"}]  # size desc
+
+    def test_empty(self):
+        assert cluster_by_pairs([]) == []
+
+    def test_dedup_repeated_pairs(self):
+        assert cluster_by_pairs([("a", "b"), ("a", "b")]) == [["a", "b"]]
+
+    def test_sorted_within_cluster_and_by_size(self):
+        cl = cluster_by_pairs([("y", "x"), ("z", "y"), ("n", "m")])
+        assert cl[0] == ["x", "y", "z"]   # size 3, sorted ids
+        assert cl[1] == ["m", "n"]
+
+    def test_singletons_never_appear(self):
+        # 'solo' is never in a pair -> excluded
+        cl = cluster_by_pairs([("a", "b")])
+        assert all("solo" not in c for c in cl) and cl == [["a", "b"]]

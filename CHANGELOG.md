@@ -4,6 +4,21 @@ All notable changes to **local-mem0-mcp** are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/); the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-06-14
+
+### Added
+- **Near-duplicate nudges** (pure local cosine over the stored embeddings; no LLM)
+  to drive reconciliation instead of letting duplicates pile up:
+  - `add_memory` now shows each nearby memory's cosine similarity and prints a
+    prominent **LIKELY DUPLICATE** warning (urging update/merge over keeping both)
+    when the nearest existing memory is ≥ `MEM0_DUP_THRESHOLD`.
+  - `curate_memories` lists **likely-duplicate clusters** (connected components of
+    memories with pairwise cosine ≥ the threshold) as prime merge candidates.
+  - New config: `MEM0_DUP_THRESHOLD` (default `0.92`, empirically tuned for the
+    default e5 embedder, whose similarities run high) and `MEM0_DUP_MAX_DOCS`
+    (default `2000`, caps the O(n²) duplicate scan in `curate_memories`).
+  - New pure helper `cluster_by_pairs` in `server/mem0_retrieval.py` (unit-tested).
+
 ## [0.2.0] — 2026-06-14
 
 ### Changed
@@ -58,5 +73,6 @@ lifecycle, and one shared Chroma writer across all clients.
   Korean-heavy / bilingual stores — switch with `server/migrate_reembed.py`.
 - Migration scripts support opt-in backup pruning via `MEM0_BACKUP_KEEP`.
 
+[0.3.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.1.0

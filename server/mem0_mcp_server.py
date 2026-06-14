@@ -61,7 +61,7 @@ from mem0_store import (
     core_used,
     normalize_tags,
 )
-from mem0_retrieval import bm25_rank, rrf_merge, fuse_rescue
+from mem0_retrieval import bm25_rank, rrf_merge, fuse_rescue, cluster_by_pairs
 
 logger = logging.getLogger("mem0-mcp")
 
@@ -235,6 +235,15 @@ def _results(resp):
 # How many results search_memories returns.
 SEARCH_TOPK = int(os.environ.get("MEM0_SEARCH_TOPK", "10"))
 
+# Near-duplicate detection (pure cosine over stored vectors; NO LLM). Used to nudge
+# reconciliation: add_memory warns when a new entry is near-identical to an existing
+# one, and curate_memories surfaces duplicate clusters to merge. The default is tuned
+# for the default e5 embedder, whose cosine sims run high (median ~0.83 on a real
+# store), so the threshold is high; retune if you change MEM0_EMBEDDER_MODEL.
+_DUP_THRESHOLD = float(os.environ.get("MEM0_DUP_THRESHOLD", "0.92"))
+# Skip the O(n^2) duplicate scan above this many memories (curate_memories only).
+_DUP_MAX_DOCS = int(os.environ.get("MEM0_DUP_MAX_DOCS", "2000"))
+
 
 # Serialize ALL store access (reads AND writes) across every client. FastMCP runs
 # these sync tools in a worker threadpool (run_in_thread=True), so two tool calls
@@ -327,6 +336,44 @@ def _semantic_search(query: str, uid: str, limit: int):
     if _FUSION == "rrf":
         return rrf_merge([dense, lexical], limit, _RRF_K)
     return fuse_rescue(dense, lexical, limit)
+
+
+def _duplicate_clusters(uid: str, threshold: float, max_docs: int):
+    """Likely-duplicate memory clusters, via cosine similarity over the stored
+    embeddings (pure vector math; NO LLM, no new model call -- reuses the vectors
+    already in Chroma). Returns [[{id, memory}, ...], ...] for clusters of >=2.
+    Best-effort: returns [] on any error or if the store exceeds max_docs (the
+    O(n^2) scan is for the occasional curation pass, not the hot path)."""
+    try:
+        import numpy as np
+        data = m.vector_store.collection.get(include=["embeddings", "metadatas"])
+    except Exception as e:
+        logger.debug("duplicate-cluster scan skipped: %s", e)
+        return []
+    ids_all = data.get("ids") or []
+    embs_all = data.get("embeddings")
+    metas_all = data.get("metadatas") or []
+    if embs_all is None or len(ids_all) < 2:
+        return []
+    sel = [k for k in range(len(ids_all)) if (metas_all[k] or {}).get("user_id") == uid]
+    if len(sel) < 2 or len(sel) > max_docs:
+        return []
+    ids = [ids_all[k] for k in sel]
+    text_by_id = {ids_all[k]: (metas_all[k] or {}).get("data", "") for k in sel}
+    try:
+        V = np.asarray([embs_all[k] for k in sel], dtype=float)
+        norms = np.linalg.norm(V, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        V = V / norms
+        sims = V @ V.T
+    except Exception as e:
+        logger.debug("duplicate-cluster math skipped: %s", e)
+        return []
+    n = len(ids)
+    pairs = [(ids[i], ids[j]) for i in range(n) for j in range(i + 1, n)
+             if sims[i, j] >= threshold]
+    return [[{"id": cid, "memory": text_by_id.get(cid, "")} for cid in cl]
+            for cl in cluster_by_pairs(pairs)]
 
 
 # ---- core memory (pinned, bounded, always-on) + usage stats -------------------
@@ -445,8 +492,9 @@ def add_memory(text: str, user_id: str = "", tags: str = "") -> str:
     uid = user_id or DEFAULT_USER
     try:
         with _store_lock:
-            # Nearest existing memories (ranked by the corrected distance search).
-            related = _semantic_search(text, uid, RELATED_TOPK)
+            # Dense nearest EXISTING memories (computed BEFORE the add) so we can
+            # flag near-duplicates and nudge reconciliation instead of piling up.
+            related = _dense_search(text, uid, RELATED_TOPK)
             added = _results(m.add(text, user_id=uid, infer=False))
             new_id = added[0].get("id", "N/A") if added else "N/A"
             norm = normalize_tags(tags)
@@ -455,13 +503,27 @@ def add_memory(text: str, user_id: str = "", tags: str = "") -> str:
                 meta["tags"][new_id] = norm
                 _save_meta(meta)
 
+        def _sim(r):
+            s = r.get("score")
+            return None if s is None else 1.0 - s  # cosine distance -> similarity
+
         tagstr = (" " + " ".join(f"#{t}" for t in norm)) if norm else ""
         out = [f"✅ Stored (id: {new_id}){tagstr}: {text}"]
+        top_sim = _sim(related[0]) if related else None
+        if top_sim is not None and top_sim >= _DUP_THRESHOLD:
+            dup = related[0]
+            out.append(f"\n⚠️ LIKELY DUPLICATE of [id: {dup.get('id', 'N/A')}] "
+                       f"(cosine {top_sim:.2f}): {dup.get('memory', '(empty)')}")
+            out.append("→ This new entry looks redundant. Prefer reconciling over keeping "
+                       "both: update_memory(that id, merged_text) to fold them together, "
+                       "then delete_memory the leftover (this new id or the old one).")
         if related:
-            out.append("\n🔎 Nearest existing memories — if your new fact "
+            out.append("\n🔎 Nearest existing memories (cosine) — if your new fact "
                        "duplicates / updates / contradicts any, reconcile it:")
             for r in related:
-                out.append(f"  • [id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}")
+                sim = _sim(r)
+                simstr = f"{sim:.2f}" if sim is not None else "?"
+                out.append(f"  • [sim {simstr}] [id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}")
             out.append("→ update_memory(id, merged_text) to refine/merge, or "
                        "delete_memory(id) to remove an outdated one.")
         return "\n".join(out)
@@ -691,7 +753,7 @@ def curate_memories() -> str:
     """Run a maintenance pass over long-term memory, driven by YOU (the agent).
     Invoke periodically -- or whenever memory feels noisy -- to merge duplicates,
     drop stale facts, tighten wording, and keep the always-on core small and
-    current. Usage stats are provided as curation hints."""
+    current. Usage stats and likely-duplicate clusters are provided as hints."""
     uid = DEFAULT_USER
     with _store_lock:
         results = _get_all(uid)
@@ -704,6 +766,7 @@ def curate_memories() -> str:
                 meta["access"].pop(mid, None)
             _save_meta(meta)
         core_ids = {it["id"] for it in _core_items(meta)}
+        clusters = _duplicate_clusters(uid, _DUP_THRESHOLD, _DUP_MAX_DOCS)
     if not results:
         return "Nothing to curate: no memories stored."
     lines = [
@@ -720,10 +783,22 @@ def curate_memories() -> str:
         pin = " 📌" if mid in core_ids else ""
         lines.append(f"- [id: {mid}]{pin} (created {created}, used {st.get('count', 0)}x, "
                      f"last {st.get('last') or 'never'}) {r.get('memory', '(empty)')}")
+    if clusters:
+        lines += [
+            "",
+            f"🔁 Likely-duplicate clusters (cosine ≥ {_DUP_THRESHOLD}) — prime merge "
+            "candidates; confirm they are truly redundant before merging:",
+        ]
+        for cl in clusters:
+            lines.append(f"  • {len(cl)} similar:")
+            for it in cl:
+                lines.append(f"      [id: {it['id']}] {it['memory'][:110]}")
     lines += [
         "",
         "Curate now, one change at a time, using the tools:",
-        "1. MERGE near-duplicates: update_memory(keep_id, merged_text) then delete_memory(other_id).",
+        "1. MERGE near-duplicates (see the 🔁 clusters above when present): "
+        "update_memory(keep_id, merged_text) then delete_memory(other_id). Skip a "
+        "cluster whose members are genuinely distinct facts.",
         "2. DELETE memories that are wrong, obsolete, superseded, or one-off trivia.",
         "3. REWRITE vague or bloated entries into one atomic, self-contained fact (update_memory).",
         "4. CORE: pin_memory the few durable facts needed in most sessions (a high "

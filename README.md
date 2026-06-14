@@ -211,9 +211,11 @@ Every search quietly records lightweight usage stats — retrieval count and
 last-used date — per memory. The `curate_memories` prompt turns those into a
 maintenance pass: it lays out the full inventory (📌 pinned, created date, usage)
 and asks the agent to merge duplicates, drop stale facts, tighten wording, and
-re-balance what deserves an always-on core slot — one tool call at a time. Run it
-periodically or whenever memory feels noisy. (Low usage alone is never a reason
-to delete: durable facts stay.)
+re-balance what deserves an always-on core slot — one tool call at a time. It also
+**flags likely-duplicate clusters** (memories whose cosine similarity ≥
+`MEM0_DUP_THRESHOLD`, computed locally over the stored embeddings — no LLM) as prime
+merge candidates. Run it periodically or whenever memory feels noisy. (Low usage
+alone is never a reason to delete: durable facts stay.)
 
 ---
 
@@ -228,9 +230,12 @@ but **your MCP client is one**, so it does the reasoning and drives these tools:
 3. **Reconcile**: `add_memory` (new) · `update_memory` (refine/merge) ·
    `delete_memory` (obsolete).
 
-To make step 3 easy, `add_memory` also returns the nearest existing memories.
-Under the hood the server uses mem0's `infer=False` path — embed and store
-verbatim — so writes are instant and deterministic, with no model call.
+To make step 3 easy, `add_memory` returns the nearest existing memories with their
+cosine similarity and **warns when the new entry looks like a near-duplicate**
+(similarity ≥ `MEM0_DUP_THRESHOLD`), so you reconcile (update/merge) instead of
+piling up redundant copies. Under the hood the server uses mem0's `infer=False`
+path — embed and store verbatim — so writes are instant and deterministic, with no
+model call.
 
 ---
 
@@ -327,6 +332,8 @@ writer even with several clients open at once.
 | `MEM0_FUSION` | `rescue` | `rescue` (non-regressing) or `rrf` (aggressive) |
 | `MEM0_RRF_K` | `60` | RRF constant (used only when `MEM0_FUSION=rrf`) |
 | `MEM0_BM25_MAX_DOCS` | `5000` | cap on lexical scan size for very large stores |
+| `MEM0_DUP_THRESHOLD` | `0.92` | cosine ≥ this flags a near-duplicate (`add_memory` warning + `curate_memories` clusters); tuned for the default embedder, retune if you swap it |
+| `MEM0_DUP_MAX_DOCS` | `2000` | skip the O(n²) duplicate scan in `curate_memories` above this many memories |
 | `MEM0_MCP_PORT` | `8765` | backend HTTP port (must match the proxy) |
 
 **Proxy** (`server/mem0_proxy.py`; set via the `env` block of your MCP config):
