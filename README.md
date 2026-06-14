@@ -325,6 +325,42 @@ writer even with several clients open at once.
 
 ---
 
+## Development
+
+The server is split into small, focused modules so the core logic is easy to test
+in isolation:
+
+- `server/mem0_retrieval.py` — pure retrieval primitives (tokenizer, BM25, rank
+  fusion). Stdlib-only; no embedder or Chroma, so it imports instantly.
+- `server/mem0_store.py` — shared store/meta/migration helpers (paths, atomic
+  writes, the pin/usage sidecar, the core-file mirror, backend liveness, Chroma
+  backup/recreate). Imported by the server and reused by the migration scripts and
+  the viewer.
+- `server/mem0_mcp_server.py` — the MCP tools/prompts/resources, lifecycle, and the
+  dense + hybrid search that wires the modules together.
+
+Run the tests and linter (dev tools only — **not** runtime deps, so they stay out
+of `requirements.txt`):
+
+```bash
+.venv/bin/python -m pip install pytest ruff
+.venv/bin/python -m pytest           # pure unit tests + integration tests
+.venv/bin/ruff check server tests    # lint (pyflakes + correctness rules)
+```
+
+The unit tests (`tests/test_retrieval.py`, `test_store.py`, `test_viewer.py`) need
+no model and run in milliseconds; the integration tests (`test_integration.py`)
+exercise the real server on a throwaway store and **skip automatically** when the
+runtime deps aren't installed. GitHub Actions (`.github/workflows/ci.yml`) runs
+ruff + pytest on Python 3.10–3.13.
+
+**Dependencies.** `mem0ai` is pinned exactly (`==2.0.4`) because the server relies
+on specific mem0 2.0.4 internals; the rest use compatible ranges capped below the
+next major (`fastmcp`, `chromadb`, `sentence-transformers`). When you bump any
+dependency, re-run the test suite and `server/eval_recall.py` first.
+
+---
+
 ## FAQ
 
 **What happened to the menu-bar toggle (and the old name)?**

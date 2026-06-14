@@ -1,12 +1,17 @@
 # Python deps for the local-mem0-mcp server. Python 3.10+.
 #
-# Versions are PINNED on purpose. The server relies on specific mem0 2.0.4
-# internals and Chroma behaviors (e.g. m.vector_store.search returning raw
-# distance as score, get_all() defaulting top_k=20, update() rebuilding payload
-# metadata, create_collection(metadata={"hnsw:space": "cosine"})). An unpinned
-# upgrade can silently change ranking or storage. Bump deliberately, then re-run
-# server/eval_recall.py and the test suite (tests/) before committing.
+# Dependency policy:
+#  - mem0ai is PINNED EXACTLY: the server relies on specific mem0 2.0.4 internals
+#    (m.vector_store.search returning the raw distance as score, get_all()
+#    defaulting top_k=20, update() rebuilding payload metadata,
+#    create_collection(metadata={"hnsw:space": "cosine"})). A minor bump can
+#    silently change ranking/storage, so this one is locked.
+#  - The rest use compatible ranges capped below the next major, so fresh installs
+#    stay easy across platforms and Python versions. Tested with chromadb 1.5.9,
+#    sentence-transformers 5.5.1, fastmcp 3.4.2.
+# When bumping any dependency, re-run the test suite (tests/) and
+# server/eval_recall.py first.
 mem0ai==2.0.4
-fastmcp==3.4.2
-chromadb==1.5.9
-sentence-transformers==5.5.1
+fastmcp>=3.4,<4
+chromadb>=1.5,<2
+sentence-transformers>=5.0,<6

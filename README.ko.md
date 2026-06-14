@@ -315,6 +315,39 @@ Chroma writer는 정확히 하나뿐입니다.
 
 ---
 
+## 개발 (테스트·린트·CI)
+
+서버는 핵심 로직을 따로 테스트하기 쉽도록 작은 모듈로 나뉘어 있습니다:
+
+- `server/mem0_retrieval.py` — 순수 검색 프리미티브(토크나이저, BM25, 랭크 융합).
+  표준 라이브러리만 사용 — 임베더/Chroma가 없어 즉시 import됩니다.
+- `server/mem0_store.py` — 공용 store/meta/마이그레이션 헬퍼(경로, 원자적 쓰기,
+  고정/사용 사이드카, 코어 파일 미러, 백엔드 생존 확인, Chroma 백업/재생성).
+  서버가 import하고 마이그레이션 스크립트·뷰어가 재사용합니다.
+- `server/mem0_mcp_server.py` — MCP 툴/프롬프트/리소스, 라이프사이클, 그리고 모듈을
+  엮는 dense + 하이브리드 검색.
+
+테스트와 린터 실행(개발 도구일 뿐 — 런타임 의존성이 **아니므로** `requirements.txt`에는
+넣지 않습니다):
+
+```bash
+.venv/bin/python -m pip install pytest ruff
+.venv/bin/python -m pytest           # 순수 단위 테스트 + 통합 테스트
+.venv/bin/ruff check server tests    # 린트(pyflakes + 정확성 규칙)
+```
+
+단위 테스트(`tests/test_retrieval.py`, `test_store.py`, `test_viewer.py`)는 모델이
+필요 없어 수 밀리초 만에 끝나고, 통합 테스트(`test_integration.py`)는 일회용 스토어에서
+실제 서버를 돌리며 런타임 의존성이 없으면 **자동으로 건너뜁니다**. GitHub Actions
+(`.github/workflows/ci.yml`)가 Python 3.10–3.13에서 ruff + pytest를 실행합니다.
+
+**의존성.** `mem0ai`는 서버가 mem0 2.0.4 내부 동작에 의존하므로 정확히 고정
+(`==2.0.4`)하고, 나머지(`fastmcp`, `chromadb`, `sentence-transformers`)는 다음 메이저
+미만으로 상한을 둔 호환 범위를 씁니다. 의존성을 올릴 때는 먼저 테스트 스위트와
+`server/eval_recall.py`를 다시 실행하세요.
+
+---
+
 ## FAQ
 
 **메뉴바 토글(과 옛 이름)은 어떻게 됐나요?**
