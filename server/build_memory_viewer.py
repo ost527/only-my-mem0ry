@@ -21,9 +21,7 @@ import argparse
 import webbrowser
 from datetime import datetime
 
-
-def _expand(p: str) -> str:
-    return os.path.abspath(os.path.expanduser(p))
+from mem0_store import expand as _expand, load_meta as _load_sidecar
 
 
 def load_memories(chroma_path: str, collection: str, user: str) -> list:
@@ -52,13 +50,7 @@ def load_memories(chroma_path: str, collection: str, user: str) -> list:
 
 def load_meta(meta_path: str):
     """Return (pinned:set, access:dict{id:{count,last}}) from the sidecar."""
-    try:
-        with open(meta_path, encoding="utf-8") as f:
-            meta = json.load(f)
-        if not isinstance(meta, dict):
-            meta = {}
-    except (OSError, ValueError):
-        meta = {}
+    meta = _load_sidecar(meta_path)
     return set(meta.get("pinned") or []), (meta.get("access") or {})
 
 

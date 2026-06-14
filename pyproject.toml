@@ -1,0 +1,22 @@
+# Tooling config for local-mem0-mcp (dev only; the server itself needs no build).
+#
+# Runtime deps are pinned in requirements.txt. Dev tools (pytest, ruff) are not
+# runtime deps and are installed ad hoc / by CI.
+
+[tool.pytest.ini_options]
+# The server modules live in server/ (not an installed package), so put it on the
+# import path. Heavy-dependency integration tests skip themselves when mem0 /
+# chromadb / sentence-transformers are absent (see tests/test_integration.py).
+pythonpath = ["server"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Ruff's default high-signal set: pyflakes (F: undefined names, unused imports) +
+# the correctness-oriented pycodestyle groups. Deliberately NOT enabling style
+# nags (line length etc.) -- this guards against bugs, not formatting taste.
+select = ["E4", "E7", "E9", "F"]

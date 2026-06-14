@@ -1,6 +1,12 @@
-# Python deps for the mem0 MCP server.
-# Tested with: fastmcp 3.4.2, Python 3.10+.
-mem0ai
-fastmcp>=3.0,<4
-chromadb
-sentence-transformers
+# Python deps for the local-mem0-mcp server. Python 3.10+.
+#
+# Versions are PINNED on purpose. The server relies on specific mem0 2.0.4
+# internals and Chroma behaviors (e.g. m.vector_store.search returning raw
+# distance as score, get_all() defaulting top_k=20, update() rebuilding payload
+# metadata, create_collection(metadata={"hnsw:space": "cosine"})). An unpinned
+# upgrade can silently change ranking or storage. Bump deliberately, then re-run
+# server/eval_recall.py and the test suite (tests/) before committing.
+mem0ai==2.0.4
+fastmcp==3.4.2
+chromadb==1.5.9
+sentence-transformers==5.5.1

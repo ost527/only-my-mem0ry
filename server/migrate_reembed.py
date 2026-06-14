@@ -29,11 +29,10 @@ and the store disagree on the model, search quality collapses.
 """
 import os
 import sys
-import time
-import socket
-import shutil
 
-PATH = os.path.abspath(os.path.expanduser(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma")))
+from mem0_store import expand, is_backend_up, backup_store, recreate_collection_cosine
+
+PATH = expand(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma"))
 NAME = os.environ.get("MEM0_COLLECTION", "mem0")
 HOST = os.environ.get("MEM0_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MEM0_MCP_PORT", "8765"))
@@ -47,21 +46,15 @@ if not NEW_MODEL:
 
 # Refuse to run while the backend is up: concurrent Chroma access is unsafe (and it
 # holds the single-writer lock).
-_s = socket.socket()
-_s.settimeout(0.3)
-try:
-    _s.connect((HOST, PORT))
-    _s.close()
+if is_backend_up(HOST, PORT):
     sys.exit(f"Backend is running on {HOST}:{PORT}. Stop it first:\n"
              f"  launchctl kill TERM gui/$(id -u)/com.mem0mcp.server")
-except OSError:
-    pass
 
 if not os.path.isdir(PATH):
     sys.exit(f"No Chroma store at {PATH}")
 
-import chromadb
-from sentence_transformers import SentenceTransformer
+import chromadb  # noqa: E402  (deferred: skip heavy imports if a guard above exits)
+from sentence_transformers import SentenceTransformer  # noqa: E402
 
 client = chromadb.PersistentClient(path=PATH)
 cols = [getattr(c, "name", c) for c in client.list_collections()]
@@ -91,18 +84,14 @@ if NEW_DIMS and int(NEW_DIMS) != dim:
     sys.exit(f"model produced {dim}-dim vectors but MEM0_EMBEDDER_DIMS={NEW_DIMS}; "
              f"set MEM0_EMBEDDER_DIMS={dim} (and use the same for the backend)")
 
-backup = f"{PATH}.bak.{int(time.time())}"
-shutil.copytree(PATH, backup)
+backup = backup_store(PATH)
 print("backup:", backup)
 
 # Recreate the collection (cosine) and re-add with the new embeddings, preserving
 # ids + metadata so memory IDs and user_id scoping are unchanged.
-client.delete_collection(NAME)
-new = client.create_collection(NAME, metadata={"hnsw:space": "cosine"})
-kw = dict(ids=ids, embeddings=embs.tolist(), metadatas=metas)
-if any(d is not None for d in docs):
-    kw["documents"] = [d if d is not None else texts[i] for i, d in enumerate(docs)]
-new.add(**kw)
+documents = ([d if d is not None else texts[i] for i, d in enumerate(docs)]
+             if any(d is not None for d in docs) else None)
+new = recreate_collection_cosine(client, NAME, ids, embs.tolist(), metas, documents)
 assert new.count() == n, f"count mismatch: {new.count()} != {n}"
 
 print(f"done: {n} memories re-embedded to {dim} dims with '{NEW_MODEL}'. Backup at {backup}")

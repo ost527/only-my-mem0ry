@@ -39,10 +39,7 @@ Env vars (all optional):
                          stdio proxy keeps it warm while a client is open.
 """
 import os
-import re
-import json
 import time
-import math
 import fcntl
 import signal
 import asyncio
@@ -55,12 +52,17 @@ from fastmcp.server.middleware import Middleware
 from mem0 import Memory
 
 from mem0_instructions import INSTRUCTIONS
+from mem0_store import (
+    expand as _expand,
+    atomic_write,
+    load_meta,
+    save_meta,
+    render_core_file,
+    core_used,
+)
+from mem0_retrieval import bm25_rank, rrf_merge, fuse_rescue
 
 logger = logging.getLogger("mem0-mcp")
-
-
-def _expand(p: str) -> str:
-    return os.path.abspath(os.path.expanduser(p))
 
 
 CHROMA_PATH = _expand(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma"))
@@ -276,9 +278,8 @@ def _dense_search(query: str, uid: str, limit: int):
 # env-var names, IPs, function names (e.g. ~/.ssh/oracle/oracle-32min.key,
 # COUPANG_SEARCH_RESULT_PRICE_ENABLED, 168.107.21.193, crawlSearchResultCard).
 # Pure dense (semantic) retrieval often misses exact tokens; a lexical BM25 signal
-# nails them. We fuse the two rankings with Reciprocal Rank Fusion (RRF), which is
-# robust and needs no score normalization across the two very different scales.
-# All local, deterministic, no extra dependency (BM25 is a few lines).
+# nails them. The pure tokenizer/BM25/fusion primitives live in mem0_retrieval;
+# the env-driven knobs below configure them. All local, deterministic, no extra dep.
 _HYBRID = os.environ.get("MEM0_HYBRID_SEARCH", "1") not in ("0", "false", "False", "")
 _RRF_K = int(os.environ.get("MEM0_RRF_K", "60"))
 # Fusion mode: "rescue" (default, non-regressing -- dense order is preserved and
@@ -302,90 +303,13 @@ def _get_all(uid: str):
     return _results(m.get_all(filters={"user_id": uid}, top_k=_GET_ALL_TOPK))
 
 
-def _tokenize(text: str):
-    # ASCII identifier parts split on _-./ etc.: COUPANG_SEARCH_RESULT ->
-    # [coupang, search, result]; 168.107.21.193 -> [168, 107, 21, 193]. Non-ASCII
-    # runs (e.g. Korean 쿠팡, 화면공유) are kept as their own tokens so lexical
-    # search helps a bilingual store too. camelCase stays one token, matching a
-    # same-cased query token.
-    return re.findall(r"[a-z0-9]+|[^\x00-\x7f]+", (text or "").lower())
-
-
-def _bm25_rank(query: str, corpus: list, limit: int):
-    """Rank corpus docs ([{id, memory}]) against the query with Okapi BM25.
-    Returns ranked [{id, memory, score}], score > 0 only (docs sharing >=1 query
-    term). Pure-Python, deterministic."""
-    q_terms = _tokenize(query)
-    if not q_terms or not corpus:
-        return []
-    docs = corpus[:_BM25_MAX_DOCS]
-    tokenized = [_tokenize(d.get("memory", "")) for d in docs]
-    n_docs = len(docs)
-    avgdl = (sum(len(t) for t in tokenized) / n_docs) if n_docs else 0.0
-    df = {term: sum(1 for toks in tokenized if term in toks) for term in set(q_terms)}
-    scored = []
-    for d, toks in zip(docs, tokenized):
-        if not toks:
-            continue
-        dl = len(toks)
-        score = 0.0
-        for term in q_terms:
-            n_qi = df.get(term, 0)
-            if n_qi == 0:
-                continue
-            f = toks.count(term)
-            if f == 0:
-                continue
-            idf = math.log(1 + (n_docs - n_qi + 0.5) / (n_qi + 0.5))
-            denom = f + _BM25_K1 * (1 - _BM25_B + _BM25_B * dl / avgdl) if avgdl else f + _BM25_K1
-            score += idf * (f * (_BM25_K1 + 1)) / denom
-        if score > 0:
-            scored.append({"id": d.get("id"), "memory": d.get("memory", ""), "score": score})
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    return scored[:limit]
-
-
-def _rrf_merge(ranked_lists: list, limit: int, k: int = _RRF_K):
-    """Reciprocal Rank Fusion: combine ranked [{id, memory}] lists into one.
-    fused(id) = sum over lists of 1/(k + rank), rank starting at 1. Robust to the
-    different score scales of dense vs BM25; rewards items ranked high in either."""
-    fused = {}
-    text_by_id = {}
-    for lst in ranked_lists:
-        for rank, item in enumerate(lst, start=1):
-            mid = item.get("id")
-            if mid is None:
-                continue
-            fused[mid] = fused.get(mid, 0.0) + 1.0 / (k + rank)
-            text_by_id.setdefault(mid, item.get("memory", ""))
-    out = [{"id": mid, "memory": text_by_id.get(mid, ""), "score": s} for mid, s in fused.items()]
-    out.sort(key=lambda x: x["score"], reverse=True)
-    return out[:limit]
-
-
-def _fuse_rescue(dense: list, lexical: list, limit: int):
-    """Dense-anchored fusion (default): keep dense's ranking as the backbone -- it
-    never demotes a doc dense found -- then append lexical-only hits (exact matches
-    the vector model missed entirely) in lexical order. Provably non-regressing vs
-    dense: it can only ADD recall (rescue overlooked identifiers), never reorder
-    dense's results. The visible payoff grows with store size, where dense starts
-    dropping exact tokens out of top-k."""
-    out, seen = [], set()
-    for it in list(dense) + list(lexical):
-        mid = it.get("id")
-        if mid is None or mid in seen:
-            continue
-        seen.add(mid)
-        out.append(it)
-    return out[:limit]
-
-
 def _semantic_search(query: str, uid: str, limit: int):
     """Hybrid retrieval (default ON): combine dense vector ranking with a lexical
     BM25 ranking so both semantic paraphrases and exact-identifier matches surface.
-    Fusion is `rescue` by default (non-regressing; see _fuse_rescue) or `rrf`
-    (aggressive) via MEM0_FUSION. Falls back to dense-only if the lexical path fails
-    or hybrid is disabled (MEM0_HYBRID_SEARCH=0). Returns [{id, memory, score}]."""
+    The tokenizer/BM25/fusion primitives are in mem0_retrieval (pure, unit-tested).
+    Fusion is `rescue` by default (non-regressing) or `rrf` (aggressive) via
+    MEM0_FUSION. Falls back to dense-only if the lexical path fails or hybrid is
+    disabled (MEM0_HYBRID_SEARCH=0). Returns [{id, memory, score}]."""
     limit = max(limit, 1)
     # Pull more candidates than `limit` from each signal so fusion has room to work.
     cand = max(limit * 4, 20)
@@ -394,14 +318,14 @@ def _semantic_search(query: str, uid: str, limit: int):
         return dense[:limit]
     try:
         corpus = _get_all(uid)
-        lexical = _bm25_rank(query, corpus, cand)
+        lexical = bm25_rank(query, corpus, cand, k1=_BM25_K1, b=_BM25_B, max_docs=_BM25_MAX_DOCS)
     except Exception:
         return dense[:limit]
     if not lexical:
         return dense[:limit]
     if _FUSION == "rrf":
-        return _rrf_merge([dense, lexical], limit)
-    return _fuse_rescue(dense, lexical, limit)
+        return rrf_merge([dense, lexical], limit, _RRF_K)
+    return fuse_rescue(dense, lexical, limit)
 
 
 # ---- core memory (pinned, bounded, always-on) + usage stats -------------------
@@ -421,31 +345,14 @@ CORE_FILE = _expand(os.environ.get("MEM0_CORE_FILE", os.path.join(_STATE_DIR, "C
 CORE_BUDGET = int(os.environ.get("MEM0_CORE_BUDGET", "4000"))
 
 
-def _atomic_write(path: str, text: str) -> None:
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, path)
-
-
 def _load_meta() -> dict:
-    try:
-        with open(META_PATH, encoding="utf-8") as f:
-            meta = json.load(f)
-        if not isinstance(meta, dict):
-            meta = {}
-    except (OSError, ValueError):
-        meta = {}
-    meta.setdefault("pinned", [])
-    meta.setdefault("access", {})
-    return meta
+    """Load the pin/usage sidecar at META_PATH (see mem0_store.load_meta)."""
+    return load_meta(META_PATH)
 
 
 def _save_meta(meta: dict) -> None:
-    try:
-        _atomic_write(META_PATH, json.dumps(meta, ensure_ascii=False, indent=1))
-    except OSError as e:
-        logger.warning("could not persist memory meta %s: %s", META_PATH, e)
+    """Persist the pin/usage sidecar to META_PATH (best-effort; see mem0_store)."""
+    save_meta(META_PATH, meta)
 
 
 def _record_access(ids) -> None:
@@ -496,15 +403,8 @@ def _core_items(meta: dict) -> list:
 def _sync_core_file(items: list) -> None:
     """Mirror core memories to CORE_FILE so always-on rules files can include
     them. Must be called after every mutation that can change core content."""
-    body = ("\n".join(f"- {it['memory']}  (id: {it['id']})" for it in items)
-            if items else "(core memory is empty -- pin_memory adds entries)")
-    text = (
-        "# Core memory (always-on) — local-mem0-mcp\n"
-        "<!-- Auto-generated; do not edit. Manage with pin_memory / unpin_memory. -->\n\n"
-        f"{body}\n"
-    )
     try:
-        _atomic_write(CORE_FILE, text)
+        atomic_write(CORE_FILE, render_core_file(items))
     except OSError as e:
         logger.warning("could not sync core memory file %s: %s", CORE_FILE, e)
 
@@ -639,7 +539,7 @@ def pin_memory(memory_id: str) -> str:
             if memory_id in meta["pinned"]:
                 return f"📌 Already pinned: [id: {memory_id}] {text}"
             items = _core_items(meta)
-            used = sum(len(it["memory"]) for it in items)
+            used = core_used(items)
             if used + len(text) > CORE_BUDGET:
                 listing = "\n".join(
                     f"  • ({len(it['memory'])} chars) [id: {it['id']}] {it['memory']}"

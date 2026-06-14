@@ -14,33 +14,25 @@ A backup is written to <chroma_path>.bak.<timestamp> before migrating.
 """
 import os
 import sys
-import time
-import socket
-import shutil
 
-PATH = os.path.abspath(os.path.expanduser(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma")))
+from mem0_store import expand, is_backend_up, backup_store, recreate_collection_cosine
+
+PATH = expand(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma"))
 NAME = os.environ.get("MEM0_COLLECTION", "mem0")
 HOST = os.environ.get("MEM0_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MEM0_MCP_PORT", "8765"))
 
 # Refuse to run while the backend is up: concurrent Chroma access is unsafe.
-_s = socket.socket()
-_s.settimeout(0.3)
-try:
-    _s.connect((HOST, PORT))
-    _s.close()
+if is_backend_up(HOST, PORT):
     sys.exit(f"Backend is running on {HOST}:{PORT}. Stop it first:\n"
              f"  launchctl kill TERM gui/$(id -u)/com.mem0mcp.server")
-except OSError:
-    pass
 
-import chromadb
+import chromadb  # noqa: E402  (deferred: skip the heavy import if the guard above exits)
 
 if not os.path.isdir(PATH):
     sys.exit(f"No Chroma store at {PATH}")
 
-backup = f"{PATH}.bak.{int(time.time())}"
-shutil.copytree(PATH, backup)
+backup = backup_store(PATH)
 print("backup:", backup)
 
 client = chromadb.PersistentClient(path=PATH)
@@ -64,12 +56,8 @@ if n == 0:
     sys.exit("empty collection; aborting")
 print(f"migrating {n} memories to cosine...")
 
-client.delete_collection(NAME)
-new = client.create_collection(NAME, metadata={"hnsw:space": "cosine"})
-kw = dict(ids=ids, embeddings=embs, metadatas=metas)
-if docs and any(d is not None for d in docs):
-    kw["documents"] = docs
-new.add(**kw)
+documents = docs if (docs and any(d is not None for d in docs)) else None
+new = recreate_collection_cosine(client, NAME, ids, embs, metas, documents)
 assert new.count() == n, f"count mismatch: {new.count()} != {n}"
 
 print(f"done: {n} memories now use cosine. Backup kept at {backup}")
