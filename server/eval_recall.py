@@ -144,7 +144,7 @@ def evaluate(search_fn, label_by_id):
 
 
 def main():
-    model = os.environ.get("MEM0_EMBEDDER_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    model = os.environ.get("MEM0_EMBEDDER_MODEL", "intfloat/multilingual-e5-small")
     label_by_id = seed()
     print(f"embedder : {model}")
     print(f"corpus   : {len(CORPUS)} memories | queries: {len(QUERIES)} | MRR over top-{max(K_VALUES)}\n")

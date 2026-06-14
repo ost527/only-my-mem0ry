@@ -4,6 +4,22 @@ All notable changes to **local-mem0-mcp** are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/); the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] — 2026-06-14
+
+### Changed
+- **Default embedder is now `intfloat/multilingual-e5-small`** (384-dim) instead of
+  `all-MiniLM-L6-v2`. Memories here are bilingual (KO/EN); measured recall on a
+  bilingual corpus is markedly better (MRR 0.92 vs 0.79, hit@3 1.00 vs 0.82).
+  `MEM0_EMBEDDER_DIMS` stays 384; the first-run download grows from ~90 MB to
+  ~470 MB.
+
+### Migration
+- **Existing stores must re-embed.** A store created with `all-MiniLM-L6-v2` will
+  not match the new default's query vectors, so recall collapses until you either
+  re-embed with `server/migrate_reembed.py` or pin the old model via
+  `MEM0_EMBEDDER_MODEL=sentence-transformers/all-MiniLM-L6-v2`. See README →
+  *Retrieval & tuning*.
+
 ## [0.1.0] — 2026-06-14
 
 First tagged release. A fully local, zero-config [Mem0](https://github.com/mem0ai/mem0)
@@ -42,4 +58,5 @@ lifecycle, and one shared Chroma writer across all clients.
   Korean-heavy / bilingual stores — switch with `server/migrate_reembed.py`.
 - Migration scripts support opt-in backup pruning via `MEM0_BACKUP_KEEP`.
 
+[0.2.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.1.0

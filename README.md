@@ -17,8 +17,8 @@ opens and shuts itself off (freeing RAM) when you're done.
 - 🧠 **No LLM in the loop.** Your MCP client is *already* a capable LLM, so it
   does the "smart memory" reasoning (extract facts, dedup, merge, resolve
   conflicts) and calls simple primitives. No second model, no API key, no cost.
-- 💾 **100% local.** Embeddings run on-device (`all-MiniLM-L6-v2`); memories live
-  in a local **Chroma** store at `~/.mem0-mcp/chroma`. Works offline.
+- 💾 **100% local.** Embeddings run on-device (`intfloat/multilingual-e5-small`);
+  memories live in a local **Chroma** store at `~/.mem0-mcp/chroma`. Works offline.
 - ⚡ **Auto-managed lifecycle.** Launching a client starts the backend on demand;
   closing the last client lets it idle-exit and free ~200 MB. No manual toggle.
 - 🤝 **Multi-client safe.** Kiro, Claude Desktop, Cursor, … all share **one**
@@ -52,7 +52,8 @@ work. When the last client closes, the backend idle-exits on its own.
 - **Python 3.10+** (`python3`)
 
 That's it — no Xcode, no API keys, no external services. The embedding model
-downloads once on first use (~90 MB), then runs fully offline.
+downloads once on first use (~470 MB for the default multilingual model), then runs
+fully offline.
 
 ---
 
@@ -253,34 +254,37 @@ your real store or the backend):
 EVAL_VERBOSE=1 .venv/bin/python server/eval_recall.py   # per-query first-hit ranks
 ```
 
-**Trying a different embedder.** Swapping `MEM0_EMBEDDER_MODEL` on a *populated*
-store breaks ranking (old vectors were produced by the old model). Compare
-candidates with the harness, then re-embed safely (backs up first; stop the backend
-first):
+**The default embedder is `intfloat/multilingual-e5-small`** (384-dim, ~470 MB),
+because memories here are bilingual (KO/EN) and an English-only model misses Korean
+and cross-lingual recall. Swapping `MEM0_EMBEDDER_MODEL` on a *populated* store
+breaks ranking (old vectors were produced by the old model), so re-embed instead
+(backs up first; stop the backend first):
 
 ```bash
-MEM0_EMBEDDER_MODEL=intfloat/multilingual-e5-small MEM0_EMBEDDER_DIMS=384 \
+# e.g. switch to the lighter English-only model
+MEM0_EMBEDDER_MODEL=sentence-transformers/all-MiniLM-L6-v2 MEM0_EMBEDDER_DIMS=384 \
     .venv/bin/python server/migrate_reembed.py
 ```
 
-Good local, multilingual-friendly options for a bilingual store (both 384 dims):
-`intfloat/multilingual-e5-small` and
-`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`.
+> **Upgrading from a version before 0.2.0?** The old default was
+> `all-MiniLM-L6-v2`. After updating, either re-embed your store (command above,
+> with the new default `intfloat/multilingual-e5-small`) **or** keep the old model
+> by setting `MEM0_EMBEDDER_MODEL=sentence-transformers/all-MiniLM-L6-v2` for the
+> backend. Otherwise new query vectors won't match your stored vectors and recall
+> collapses.
 
 **Measured** on a bilingual corpus (31 memories; 22 KO/EN + cross-lingual queries;
-`server/eval_recall.py`). The default is *English-only*, so Korean and cross-lingual
-recall is weaker:
+`server/eval_recall.py`):
 
-| embedder (384-dim) | hit@1 | hit@3 | hit@5 | MRR |
-|---|---|---|---|---|
-| `all-MiniLM-L6-v2` (default, ~90 MB) | 0.73 | 0.82 | 0.91 | 0.79 |
-| `intfloat/multilingual-e5-small` (~470 MB) | **0.86** | **1.00** | **1.00** | **0.92** |
-| `paraphrase-multilingual-MiniLM-L12-v2` | 0.77 | 0.86 | 0.86 | 0.81 |
+| embedder (384-dim) | download | hit@1 | hit@3 | hit@5 | MRR |
+|---|---|---|---|---|---|
+| `intfloat/multilingual-e5-small` (**default**) | ~470 MB | **0.86** | **1.00** | **1.00** | **0.92** |
+| `all-MiniLM-L6-v2` (English-only, lighter) | ~90 MB | 0.73 | 0.82 | 0.91 | 0.79 |
+| `paraphrase-multilingual-MiniLM-L12-v2` | ~470 MB | 0.77 | 0.86 | 0.86 | 0.81 |
 
-For a **Korean-heavy or bilingual** store, `intfloat/multilingual-e5-small` is the
-clear pick — re-embed with the command above. The lightweight English-only model
-stays the default so the out-of-the-box download is small; switch deliberately when
-you need multilingual recall.
+All three are 384-dim, so `MEM0_EMBEDDER_DIMS` stays `384`. If your store is
+**English-only** and you want the smallest download, re-embed with
+`all-MiniLM-L6-v2` as shown above.
 
 ---
 
@@ -309,7 +313,7 @@ writer even with several clients open at once.
 | Var | Default | Notes |
 |-----|---------|-------|
 | `MEM0_IDLE_TIMEOUT` | `600` | seconds of inactivity before the backend exits; `0` disables |
-| `MEM0_EMBEDDER_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | local embedder |
+| `MEM0_EMBEDDER_MODEL` | `intfloat/multilingual-e5-small` | local embedder |
 | `MEM0_EMBEDDER_DIMS` | `384` | must match the model |
 | `MEM0_CHROMA_PATH` | `~/.mem0-mcp/chroma` | vector store location |
 | `MEM0_COLLECTION` | `mem0` | Chroma collection name |

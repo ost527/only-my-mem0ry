@@ -20,7 +20,7 @@ Intended workflow (the agent performs it; encoded in the tool descriptions):
 skip the explicit search.
 
 Env vars (all optional):
-  MEM0_EMBEDDER_MODEL    HF sentence-transformers model (default: sentence-transformers/all-MiniLM-L6-v2)
+  MEM0_EMBEDDER_MODEL    HF sentence-transformers model (default: intfloat/multilingual-e5-small)
   MEM0_EMBEDDER_DIMS     embedding dims (default: 384)
   MEM0_CHROMA_PATH       Chroma persist dir (default: ~/.mem0-mcp/chroma)
   MEM0_COLLECTION        collection name (default: mem0)
@@ -184,7 +184,7 @@ config = {
     "embedder": {
         "provider": "huggingface",
         "config": {
-            "model": os.environ.get("MEM0_EMBEDDER_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+            "model": os.environ.get("MEM0_EMBEDDER_MODEL", "intfloat/multilingual-e5-small"),
             "embedding_dims": int(os.environ.get("MEM0_EMBEDDER_DIMS", "384")),
         },
     },
