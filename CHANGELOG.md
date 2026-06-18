@@ -4,6 +4,46 @@ All notable changes to **only-my-mem0ry** are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/); the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] — 2026-06-19
+
+Hardening + a config fix from a full code review. No runtime correctness bugs were
+found; these are robustness, durability, and install/doc-consistency fixes
+(behavior-preserving for the running backend — ranking and tools are unchanged).
+
+### Fixed
+- **`install.sh` now actually configures the embedder.** It forwards
+  `MEM0_EMBEDDER_MODEL` and `MEM0_EMBEDDER_DIMS` into the launchd plist (new
+  template placeholders + `sed` rules), so the documented re-embed workflow
+  (`MEM0_EMBEDDER_MODEL=… ./install.sh`, printed by `migrate_reembed.py`) really
+  reconfigures the backend. Previously those vars were silently ignored, so after
+  re-embedding a store to a different model the backend kept querying with the
+  **default** embedder — query and stored vectors then lived in different spaces
+  and recall collapsed with no error. The README / README.ko config intro now
+  states exactly which vars `install.sh` forwards (`MEM0_MCP_PORT`,
+  `MEM0_IDLE_TIMEOUT`, `MEM0_EMBEDDER_MODEL`, `MEM0_EMBEDDER_DIMS`); set any other
+  via the plist template.
+- **Single-writer lock now covers the offline writers too.** The acquire/retry
+  logic moved to `mem0_store.acquire_single_writer_lock()` and is now taken by
+  `migrate_cosine.py`, `migrate_reembed.py`, and `ingest_file.py` as well — closing
+  the TOCTOU window where a client could kickstart the backend between their
+  `is_backend_up()` check and their writes, producing a second Chroma writer. The
+  lockfile is opened in append mode and truncated only **after** the lock is held,
+  so a loser can no longer wipe the winner's pid out of the file.
+- **Durable sidecar/core-file writes.** `atomic_write` now `flush()` + `os.fsync()`
+  before the rename, so content survives a crash/power-loss after the call returns
+  (it was atomic against torn reads, but not durable).
+- **Large-store migrations.** `recreate_collection_cosine` re-adds rows in batches
+  (≤ the client's max add-batch size) so `migrate_cosine` / `migrate_reembed` can't
+  exceed Chroma's per-`add` limit on a big store.
+- **HTML viewer hardening.** `esc()` now also escapes quotes (defense-in-depth for
+  the copy-id attribute), and the `--user` filter is an exact match like the
+  server's `get_all` (it no longer also includes rows with `user_id == None`).
+
+### Notes
+- Gates: `ruff` clean; **160** tests pass (+8 new — single-writer lock, batched
+  recreate, durable write, viewer `esc` guard); `server/eval_recall.py` is
+  non-regressing (dense == hybrid: hit@1 0.864 / hit@3,5 1.000 / MRR 0.917).
+
 ## [0.8.0] — 2026-06-18
 
 memanto gap-analysis **Phase 4** (file ingest + batch add). See
