@@ -209,8 +209,22 @@ def parse_date(value) -> "str | None":
 
 
 def date_of(ts) -> str:
-    """The 'YYYY-MM-DD' day of an ISO timestamp (or '' if missing/blank)."""
-    return (str(ts)[:10]) if ts else ""
+    """Local-calendar 'YYYY-MM-DD' of an ISO timestamp (or '' if missing/blank).
+    mem0 stores created_at/updated_at in UTC (e.g. '...+00:00'); we convert to the
+    machine's LOCAL timezone before taking the day, so since/until/changed_since
+    match the calendar day the user means (the server runs on the user's machine;
+    in UTC CI this is a no-op). Naive or date-only values are used as-is; an
+    unparseable value falls back to its first 10 chars."""
+    if not ts:
+        return ""
+    s = str(ts)
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except ValueError:
+        return s[:10]
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()
+    return dt.date().isoformat()
 
 
 # ---- core (always-on) memory mirror ------------------------------------------
