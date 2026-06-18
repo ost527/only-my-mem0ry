@@ -18,7 +18,7 @@ opens and shuts itself off (freeing RAM) when you're done.
   does the "smart memory" reasoning (extract facts, dedup, merge, resolve
   conflicts) and calls simple primitives. No second model, no API key, no cost.
 - 💾 **100% local.** Embeddings run on-device (`intfloat/multilingual-e5-small`);
-  memories live in a local **Chroma** store at `~/.mem0-mcp/chroma`. Works offline.
+  memories live in a local **Chroma** store at `~/.only-my-mem0ry/chroma`. Works offline.
 - ⚡ **Auto-managed lifecycle.** Launching a client starts the backend on demand;
   closing the last client lets it idle-exit and free ~200 MB. No manual toggle.
 - 🤝 **Multi-client safe.** Kiro, Claude Desktop, Cursor, … all share **one**
@@ -168,7 +168,7 @@ aren't burned re-explaining. Three layers push for that:
 Retrieval has one structural gap: the agent has to *decide* to search. **Core
 memory** closes it. Pin the handful of must-not-forget facts — project identity,
 key paths, environment, core preferences — and they're mirrored to a plain file,
-`~/.mem0-mcp/CORE_MEMORY.md`, that your always-on rules load **every session**.
+`~/.only-my-mem0ry/CORE_MEMORY.md`, that your always-on rules load **every session**.
 Those facts reach the agent with no tool call and no retrieval luck.
 
 - **Pin / unpin.** `pin_memory(id)` adds a memory to core; `unpin_memory(id)`
@@ -182,8 +182,8 @@ Those facts reach the agent with no tool call and no retrieval luck.
 
   ```markdown
   ## Core memory (always-on)
-  At the START of every session, read ~/.mem0-mcp/CORE_MEMORY.md — the user's
-  pinned, always-on core memory. (Claude Code: import it with `@~/.mem0-mcp/CORE_MEMORY.md`.)
+  At the START of every session, read ~/.only-my-mem0ry/CORE_MEMORY.md — the user's
+  pinned, always-on core memory. (Claude Code: import it with `@~/.only-my-mem0ry/CORE_MEMORY.md`.)
   ```
 
 The mirror file is auto-generated (re-synced on every pin/unpin and at backend
@@ -354,8 +354,8 @@ noisy. (Low usage alone is never a reason to delete: durable facts stay.)
   confidence, and created/updated dates. Like the viewer, it reads the store +
   sidecar **directly** (no model, no LLM, no running backend):
   ```bash
-  .venv/bin/python server/export_memory.py                # -> ~/.mem0-mcp/MEMORY.md
-  .venv/bin/python server/export_memory.py --format json  # -> ~/.mem0-mcp/memory-export.json
+  .venv/bin/python server/export_memory.py                # -> ~/.only-my-mem0ry/MEMORY.md
+  .venv/bin/python server/export_memory.py --format json  # -> ~/.only-my-mem0ry/memory-export.json
   ```
 
 ---
@@ -453,7 +453,7 @@ writer even with several clients open at once.
 ## Configuration
 
 **Backend** (`server/mem0_mcp_server.py`; set in
-`launchd/com.mem0mcp.server.plist.template`, then re-run `install.sh`, or pass to
+`launchd/com.only-my-mem0ry.server.plist.template`, then re-run `install.sh`, or pass to
 `install.sh`):
 
 | Var | Default | Notes |
@@ -461,14 +461,14 @@ writer even with several clients open at once.
 | `MEM0_IDLE_TIMEOUT` | `600` | seconds of inactivity before the backend exits; `0` disables |
 | `MEM0_EMBEDDER_MODEL` | `intfloat/multilingual-e5-small` | local embedder |
 | `MEM0_EMBEDDER_DIMS` | `384` | must match the model |
-| `MEM0_CHROMA_PATH` | `~/.mem0-mcp/chroma` | vector store location |
+| `MEM0_CHROMA_PATH` | `~/.only-my-mem0ry/chroma` | vector store location |
 | `MEM0_COLLECTION` | `mem0` | Chroma collection name |
 | `MEM0_DEFAULT_USER` | `developer_workspace` | default `user_id` |
 | `MEM0_RELATED_TOPK` | `3` | nearest memories `add_memory` surfaces |
 | `MEM0_SEARCH_TOPK` | `10` | results `search_memories` returns |
 | `MEM0_CORE_BUDGET` | `4000` | max total chars of pinned (core) memories; pinning past it is refused |
-| `MEM0_CORE_FILE` | `~/.mem0-mcp/CORE_MEMORY.md` | always-on core mirror file (rules files read this) |
-| `MEM0_META_FILE` | `~/.mem0-mcp/memory_meta.json` | sidecar: pin state + per-memory usage stats |
+| `MEM0_CORE_FILE` | `~/.only-my-mem0ry/CORE_MEMORY.md` | always-on core mirror file (rules files read this) |
+| `MEM0_META_FILE` | `~/.only-my-mem0ry/memory_meta.json` | sidecar: pin state + per-memory usage stats |
 | `MEM0_HYBRID_SEARCH` | `1` | hybrid dense+lexical retrieval; `0` = dense only |
 | `MEM0_FUSION` | `rescue` | `rescue` (non-regressing) or `rrf` (aggressive) |
 | `MEM0_RRF_K` | `60` | RRF constant (used only when `MEM0_FUSION=rrf`) |
@@ -486,7 +486,7 @@ writer even with several clients open at once.
 | Var | Default | Notes |
 |-----|---------|-------|
 | `MEM0_MCP_PORT` | `8765` | backend port to reach / kickstart |
-| `MEM0_SERVER_LABEL` | `com.mem0mcp.server` | launchd label to start on demand |
+| `MEM0_SERVER_LABEL` | `com.only-my-mem0ry.server` | launchd label to start on demand |
 | `MEM0_PROXY_KEEPALIVE` | `clamp(IDLE/3, 5, 120)` | seconds between keepalive pings |
 | `MEM0_BACKEND_READY_TIMEOUT` | `40` | seconds to wait for the backend to come up |
 
@@ -568,13 +568,13 @@ renamed to `only-my-mem0ry`.
 once and then runs offline.
 
 **What's "core memory"?** Regular memories surface only when searched; pinned
-*core* memories load into **every** session via `~/.mem0-mcp/CORE_MEMORY.md` (see
+*core* memories load into **every** session via `~/.only-my-mem0ry/CORE_MEMORY.md` (see
 [Core memory](#core-memory-always-on)). Use `pin_memory` for the few facts you
 always want in context.
 
-**Where is my data?** `~/.mem0-mcp/chroma` (vectors), plus
-`~/.mem0-mcp/CORE_MEMORY.md` (pinned-core mirror) and
-`~/.mem0-mcp/memory_meta.json` (pin state + usage stats). Uninstalling keeps them.
+**Where is my data?** `~/.only-my-mem0ry/chroma` (vectors), plus
+`~/.only-my-mem0ry/CORE_MEMORY.md` (pinned-core mirror) and
+`~/.only-my-mem0ry/memory_meta.json` (pin state + usage stats). Uninstalling keeps them.
 
 **Can I run several clients at once?** Yes — they all share the one backend
 (single Chroma writer).
@@ -588,14 +588,14 @@ always want in context.
   `server/mem0_proxy.py`. The proxy logs to stderr (visible in your client's MCP
   logs).
 - **Backend won't start** → confirm the agent is registered:
-  `launchctl print gui/$(id -u)/com.mem0mcp.server`. Check
-  `~/Library/Logs/mem0-mcp.log`. Start it manually with
-  `launchctl kickstart gui/$(id -u)/com.mem0mcp.server`.
+  `launchctl print gui/$(id -u)/com.only-my-mem0ry.server`. Check
+  `~/Library/Logs/only-my-mem0ry.log`. Start it manually with
+  `launchctl kickstart gui/$(id -u)/com.only-my-mem0ry.server`.
 - **Log says "refusing to start a second Chroma writer"** → expected, not a bug:
   another backend already holds the store's single-writer lock
-  (`~/.mem0-mcp/chroma/.writer.lock`). Only one backend may write at a time. Use
+  (`~/.only-my-mem0ry/chroma/.writer.lock`). Only one backend may write at a time. Use
   the one that's already up, or stop it first
-  (`launchctl kill TERM gui/$(id -u)/com.mem0mcp.server`) before starting another.
+  (`launchctl kill TERM gui/$(id -u)/com.only-my-mem0ry.server`) before starting another.
   (During a normal restart the new backend briefly retries while the old one
   exits, so this only persists if a backend is genuinely still running.)
 - **First write is slow / needs internet** → the embedder downloads once, then
@@ -605,10 +605,10 @@ always want in context.
   `.venv/bin/python server/migrate_cosine.py` to switch to cosine (reuses
   embeddings, backs up first). New installs already use cosine.
 - **Free RAM right now** → close your clients (it idle-exits), or
-  `launchctl kill TERM gui/$(id -u)/com.mem0mcp.server`.
+  `launchctl kill TERM gui/$(id -u)/com.only-my-mem0ry.server`.
 - **Only runs while logged in** — it's a LaunchAgent (per-user GUI session), not
   a boot daemon.
-- **Logs:** `~/Library/Logs/mem0-mcp.log`.
+- **Logs:** `~/Library/Logs/only-my-mem0ry.log`.
 
 ---
 
@@ -619,7 +619,7 @@ always want in context.
 ```
 
 Removes the launchd backend agent (and any legacy menu-bar toggle). Keeps your
-stored memories (`~/.mem0-mcp/chroma`) and the venv.
+stored memories (`~/.only-my-mem0ry/chroma`) and the venv.
 
 ---
 

@@ -14,6 +14,6 @@ build/
 .env
 *.local
 
-# Local data (mem0 stores under ~/.mem0-mcp by default, but ignore if placed here)
+# Local data (mem0 stores under ~/.only-my-mem0ry by default, but ignore if placed here)
 chroma/
 *.sqlite3

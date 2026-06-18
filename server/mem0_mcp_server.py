@@ -22,7 +22,7 @@ skip the explicit search.
 Env vars (all optional):
   MEM0_EMBEDDER_MODEL    HF sentence-transformers model (default: intfloat/multilingual-e5-small)
   MEM0_EMBEDDER_DIMS     embedding dims (default: 384)
-  MEM0_CHROMA_PATH       Chroma persist dir (default: ~/.mem0-mcp/chroma)
+  MEM0_CHROMA_PATH       Chroma persist dir (default: ~/.only-my-mem0ry/chroma)
   MEM0_COLLECTION        collection name (default: mem0)
   MEM0_DEFAULT_USER      default user_id (default: developer_workspace)
   MEM0_RELATED_TOPK      how many nearest existing memories add_memory surfaces for
@@ -78,7 +78,7 @@ from mem0_retrieval import (
 logger = logging.getLogger("mem0-mcp")
 
 
-CHROMA_PATH = _expand(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma"))
+CHROMA_PATH = _expand(os.environ.get("MEM0_CHROMA_PATH", "~/.only-my-mem0ry/chroma"))
 os.makedirs(CHROMA_PATH, exist_ok=True)
 
 # Single Chroma writer, enforced at the OS level. The in-process _store_lock only

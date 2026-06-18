@@ -18,7 +18,7 @@ LLM도, API 키도, 클라우드도 — 그리고 켜고 끄는 스위치도 없
   "스마트 메모리" 추론(사실 추출, 중복 제거, 병합, 충돌 해소)은 그쪽이 수행하고 서버는
   단순한 기본 동작만 호출받습니다. 두 번째 모델도, API 키도, 비용도 없습니다.
 - 💾 **100% 로컬.** 임베딩은 온디바이스(`intfloat/multilingual-e5-small`)로 동작하고, 메모리는
-  `~/.mem0-mcp/chroma`의 로컬 **Chroma** 저장소에 보관됩니다. 오프라인에서도 동작합니다.
+  `~/.only-my-mem0ry/chroma`의 로컬 **Chroma** 저장소에 보관됩니다. 오프라인에서도 동작합니다.
 - ⚡ **자동 관리 라이프사이클.** 클라이언트를 실행하면 백엔드가 온디맨드로 시작되고,
   마지막 클라이언트를 닫으면 idle-exit하며 ~200MB를 반환합니다. 수동 토글이 없습니다.
 - 🤝 **다중 클라이언트 안전.** Kiro, Claude Desktop, Cursor … 모두 **하나의** 백엔드
@@ -163,7 +163,7 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 
 검색 기반 메모리에는 구조적 약점이 하나 있습니다: 에이전트가 검색하기로 *결정*해야
 한다는 것. **코어 메모리**가 그 틈을 메웁니다. 절대 잊으면 안 되는 핵심 몇 개(프로젝트
-정체성, 핵심 경로, 환경, 핵심 선호)를 고정하면 평범한 파일 `~/.mem0-mcp/CORE_MEMORY.md`로
+정체성, 핵심 경로, 환경, 핵심 선호)를 고정하면 평범한 파일 `~/.only-my-mem0ry/CORE_MEMORY.md`로
 미러링되고, 이 파일을 여러분의 상시 룰이 **매 세션** 로드합니다. 그 사실들은 툴 호출도,
 검색 운(運)도 없이 에이전트에게 도달합니다.
 
@@ -178,8 +178,8 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 
   ```markdown
   ## Core memory (always-on)
-  At the START of every session, read ~/.mem0-mcp/CORE_MEMORY.md — the user's
-  pinned, always-on core memory. (Claude Code: import it with `@~/.mem0-mcp/CORE_MEMORY.md`.)
+  At the START of every session, read ~/.only-my-mem0ry/CORE_MEMORY.md — the user's
+  pinned, always-on core memory. (Claude Code: import it with `@~/.only-my-mem0ry/CORE_MEMORY.md`.)
   ```
 
 미러 파일은 자동 생성됩니다(고정/해제마다, 그리고 백엔드 시작 시 재동기화) — 손으로
@@ -335,8 +335,8 @@ mem0는 이미 각 메모리의 `created_at`과 `updated_at`을 저장합니다.
   (`MEMORY.md` 형식) 또는 JSON 파일로 덤프합니다 — id·본문·유형·태그·출처·신뢰도·생성/수정일.
   뷰어처럼 스토어 + 사이드카를 **직접** 읽습니다(모델·LLM·실행 중 백엔드 불필요):
   ```bash
-  .venv/bin/python server/export_memory.py                # -> ~/.mem0-mcp/MEMORY.md
-  .venv/bin/python server/export_memory.py --format json  # -> ~/.mem0-mcp/memory-export.json
+  .venv/bin/python server/export_memory.py                # -> ~/.only-my-mem0ry/MEMORY.md
+  .venv/bin/python server/export_memory.py --format json  # -> ~/.only-my-mem0ry/memory-export.json
   ```
 
 ---
@@ -427,7 +427,7 @@ Chroma writer는 정확히 하나뿐입니다.
 
 ## 설정(Configuration)
 
-**백엔드** (`server/mem0_mcp_server.py`; `launchd/com.mem0mcp.server.plist.template`에
+**백엔드** (`server/mem0_mcp_server.py`; `launchd/com.only-my-mem0ry.server.plist.template`에
 설정한 뒤 `install.sh` 재실행, 또는 `install.sh`에 전달):
 
 | 변수 | 기본값 | 설명 |
@@ -435,14 +435,14 @@ Chroma writer는 정확히 하나뿐입니다.
 | `MEM0_IDLE_TIMEOUT` | `600` | 백엔드가 종료되기까지의 무활동 시간(초); `0`이면 비활성화 |
 | `MEM0_EMBEDDER_MODEL` | `intfloat/multilingual-e5-small` | 로컬 임베더 |
 | `MEM0_EMBEDDER_DIMS` | `384` | 모델과 일치해야 함 |
-| `MEM0_CHROMA_PATH` | `~/.mem0-mcp/chroma` | 벡터 저장소 위치 |
+| `MEM0_CHROMA_PATH` | `~/.only-my-mem0ry/chroma` | 벡터 저장소 위치 |
 | `MEM0_COLLECTION` | `mem0` | Chroma 컬렉션 이름 |
 | `MEM0_DEFAULT_USER` | `developer_workspace` | 기본 `user_id` |
 | `MEM0_RELATED_TOPK` | `3` | `add_memory`가 함께 보여주는 인접 메모리 개수 |
 | `MEM0_SEARCH_TOPK` | `10` | `search_memories`가 반환하는 결과 개수 |
 | `MEM0_CORE_BUDGET` | `4000` | 고정(코어) 메모리의 총 글자 수 상한; 초과 고정은 거부 |
-| `MEM0_CORE_FILE` | `~/.mem0-mcp/CORE_MEMORY.md` | 상시 코어 미러 파일(룰 파일이 읽음) |
-| `MEM0_META_FILE` | `~/.mem0-mcp/memory_meta.json` | 사이드카: 고정 상태 + 메모리별 사용 통계 |
+| `MEM0_CORE_FILE` | `~/.only-my-mem0ry/CORE_MEMORY.md` | 상시 코어 미러 파일(룰 파일이 읽음) |
+| `MEM0_META_FILE` | `~/.only-my-mem0ry/memory_meta.json` | 사이드카: 고정 상태 + 메모리별 사용 통계 |
 | `MEM0_HYBRID_SEARCH` | `1` | 하이브리드 dense+렉시컬 검색; `0`이면 dense 전용 |
 | `MEM0_FUSION` | `rescue` | `rescue`(비후퇴) 또는 `rrf`(공격적) |
 | `MEM0_RRF_K` | `60` | RRF 상수(`MEM0_FUSION=rrf`일 때만 사용) |
@@ -460,7 +460,7 @@ Chroma writer는 정확히 하나뿐입니다.
 | 변수 | 기본값 | 설명 |
 |-----|---------|-------|
 | `MEM0_MCP_PORT` | `8765` | 접속/kickstart할 백엔드 포트 |
-| `MEM0_SERVER_LABEL` | `com.mem0mcp.server` | 온디맨드로 시작할 launchd 라벨 |
+| `MEM0_SERVER_LABEL` | `com.only-my-mem0ry.server` | 온디맨드로 시작할 launchd 라벨 |
 | `MEM0_PROXY_KEEPALIVE` | `clamp(IDLE/3, 5, 120)` | keepalive 핑 간격(초) |
 | `MEM0_BACKEND_READY_TIMEOUT` | `40` | 백엔드가 뜨기를 기다리는 시간(초) |
 
@@ -537,11 +537,11 @@ ruff + pytest를 실행합니다.
 오프라인으로 동작합니다.
 
 **"코어 메모리"가 뭔가요?** 일반 메모리는 검색할 때만 표면화되지만, 고정된 *코어*
-메모리는 `~/.mem0-mcp/CORE_MEMORY.md`를 통해 **매** 세션 로드됩니다(아래 "코어 메모리"
+메모리는 `~/.only-my-mem0ry/CORE_MEMORY.md`를 통해 **매** 세션 로드됩니다(아래 "코어 메모리"
 섹션 참고). 항상 컨텍스트에 두고 싶은 핵심 몇 개에는 `pin_memory`를 쓰세요.
 
-**제 데이터는 어디에 있나요?** `~/.mem0-mcp/chroma`(벡터)와 더불어
-`~/.mem0-mcp/CORE_MEMORY.md`(코어 미러), `~/.mem0-mcp/memory_meta.json`(고정 상태 +
+**제 데이터는 어디에 있나요?** `~/.only-my-mem0ry/chroma`(벡터)와 더불어
+`~/.only-my-mem0ry/CORE_MEMORY.md`(코어 미러), `~/.only-my-mem0ry/memory_meta.json`(고정 상태 +
 사용 통계). 제거(uninstall)해도 유지됩니다.
 
 **여러 클라이언트를 동시에 실행할 수 있나요?** 네 — 모두 하나의 백엔드를 공유합니다
@@ -555,13 +555,13 @@ ruff + pytest를 실행합니다.
   이 repo의 `.venv/bin/python3`와 `server/mem0_proxy.py`를 가리키는지 확인하세요.
   proxy는 stderr로 로그를 남깁니다(클라이언트의 MCP 로그에서 확인 가능).
 - **백엔드가 시작 안 됨** → 에이전트 등록 확인:
-  `launchctl print gui/$(id -u)/com.mem0mcp.server`. `~/Library/Logs/mem0-mcp.log`를
-  확인하세요. 수동 시작: `launchctl kickstart gui/$(id -u)/com.mem0mcp.server`.
+  `launchctl print gui/$(id -u)/com.only-my-mem0ry.server`. `~/Library/Logs/only-my-mem0ry.log`를
+  확인하세요. 수동 시작: `launchctl kickstart gui/$(id -u)/com.only-my-mem0ry.server`.
 - **로그에 "refusing to start a second Chroma writer"가 보임** → 버그가 아니라 정상입니다:
-  다른 백엔드가 이미 저장소의 단일 writer 락(`~/.mem0-mcp/chroma/.writer.lock`)을
+  다른 백엔드가 이미 저장소의 단일 writer 락(`~/.only-my-mem0ry/chroma/.writer.lock`)을
   쥐고 있습니다. 한 번에 하나의 백엔드만 쓸 수 있습니다. 이미 떠 있는 것을 쓰거나,
   다른 것을 시작하기 전에 먼저 멈추세요
-  (`launchctl kill TERM gui/$(id -u)/com.mem0mcp.server`). (정상 재시작 중에는 새
+  (`launchctl kill TERM gui/$(id -u)/com.only-my-mem0ry.server`). (정상 재시작 중에는 새
   백엔드가 옛 것이 종료되는 동안 잠깐 재시도하므로, 백엔드가 실제로 아직 떠 있을 때만
   이 메시지가 지속됩니다.)
 - **첫 쓰기가 느림 / 인터넷 필요** → 임베더가 한 번 다운로드된 뒤 오프라인으로 동작합니다.
@@ -570,9 +570,9 @@ ruff + pytest를 실행합니다.
   `.venv/bin/python server/migrate_cosine.py`를 실행해 코사인으로 전환하세요(임베딩을
   재사용하고, 먼저 백업합니다). 새 설치는 이미 코사인을 사용합니다.
 - **지금 당장 RAM 확보** → 클라이언트를 닫거나(idle-exit됨)
-  `launchctl kill TERM gui/$(id -u)/com.mem0mcp.server`.
+  `launchctl kill TERM gui/$(id -u)/com.only-my-mem0ry.server`.
 - **로그인한 동안에만 동작** — 부팅 데몬이 아니라 LaunchAgent(사용자별 GUI 세션)입니다.
-- **로그:** `~/Library/Logs/mem0-mcp.log`.
+- **로그:** `~/Library/Logs/only-my-mem0ry.log`.
 
 ---
 
@@ -583,7 +583,7 @@ ruff + pytest를 실행합니다.
 ```
 
 launchd 백엔드 에이전트(및 레거시 메뉴바 토글)를 제거합니다. 저장된 메모리
-(`~/.mem0-mcp/chroma`)와 venv는 유지합니다.
+(`~/.only-my-mem0ry/chroma`)와 venv는 유지합니다.
 
 ---
 

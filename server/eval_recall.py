@@ -7,7 +7,7 @@ and MRR. Use it to (a) prove hybrid >= dense, and (b) compare embedders: run wit
 a different MEM0_EMBEDDER_MODEL to see which serves your data best.
 
 Safe + self-contained: it uses its OWN temp store (never your real
-~/.mem0-mcp/chroma) and does not touch the running backend or take any lock.
+~/.only-my-mem0ry/chroma) and does not touch the running backend or take any lock.
 
 USAGE:
     .venv/bin/python server/eval_recall.py

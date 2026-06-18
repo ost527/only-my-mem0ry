@@ -14,7 +14,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 PORT="${MEM0_MCP_PORT:-8765}"
 IDLE="${MEM0_IDLE_TIMEOUT:-600}"
 LA="$HOME/Library/LaunchAgents"
-SERVER_LABEL="com.mem0mcp.server"
+SERVER_LABEL="com.only-my-mem0ry.server"
 
 echo "==> only-my-mem0ry installer"
 echo "    repo:        $REPO"

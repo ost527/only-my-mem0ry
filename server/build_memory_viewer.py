@@ -9,7 +9,7 @@ standalone .html file (CSS + JS + data all inline, zero network calls) with
 client-side search / sort / filter. Double-click the file to browse.
 
 Usage:
-    .venv/bin/python server/build_memory_viewer.py           # -> ~/.mem0-mcp/memory-viewer.html
+    .venv/bin/python server/build_memory_viewer.py           # -> ~/.only-my-mem0ry/memory-viewer.html
     .venv/bin/python server/build_memory_viewer.py --open    # ...and open it in your browser
 
 Options mirror the server env vars (MEM0_CHROMA_PATH, MEM0_COLLECTION,
@@ -366,7 +366,7 @@ TEMPLATE = r"""<!DOCTYPE html>
 
 
 def main():
-    default_chroma = _expand(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma"))
+    default_chroma = _expand(os.environ.get("MEM0_CHROMA_PATH", "~/.only-my-mem0ry/chroma"))
     state_dir = os.path.dirname(default_chroma)
     ap = argparse.ArgumentParser(description="Generate a read-only HTML card view of mem0 memories.")
     ap.add_argument("--out", default=os.path.join(state_dir, "memory-viewer.html"),

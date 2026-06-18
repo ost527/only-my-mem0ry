@@ -15,7 +15,7 @@ only by people who ingest those formats:
 
 Usage -- writing requires exclusive store access, so STOP THE BACKEND first
 (same rule as the migration scripts):
-    launchctl kill TERM gui/$(id -u)/com.mem0mcp.server   # or close all clients
+    launchctl kill TERM gui/$(id -u)/com.only-my-mem0ry.server   # or close all clients
     .venv/bin/python server/ingest_file.py notes.md
     .venv/bin/python server/ingest_file.py report.pdf --target-chars 1000 --overlap 120
     .venv/bin/python server/ingest_file.py notes.md --dry-run   # preview chunks, write nothing
@@ -177,7 +177,7 @@ def main():
     port = int(os.environ.get("MEM0_MCP_PORT", "8765"))
     if is_backend_up(host, port):
         sys.exit(f"Backend is running on {host}:{port}. Stop it first (or use --dry-run):\n"
-                 f"  launchctl kill TERM gui/$(id -u)/com.mem0mcp.server")
+                 f"  launchctl kill TERM gui/$(id -u)/com.only-my-mem0ry.server")
 
     res = ingest(args.path, user=args.user, target_chars=args.target_chars, overlap=args.overlap)
     if not res["chunks"]:

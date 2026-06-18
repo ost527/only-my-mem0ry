@@ -186,7 +186,7 @@ lifecycle, and one shared Chroma writer across all clients.
   `tag_memory(id, tags)`, and `search_memories(tags=...)` ANY-match scoping. Shown
   as `#tag` in tool output and filterable in the HTML viewer.
 - Always-on **core memory**: `pin_memory` / `unpin_memory`, bounded by
-  `MEM0_CORE_BUDGET`, mirrored to `~/.mem0-mcp/CORE_MEMORY.md`; plus the
+  `MEM0_CORE_BUDGET`, mirrored to `~/.only-my-mem0ry/CORE_MEMORY.md`; plus the
   `load_context` / `curate_memories` prompts and `memory://{all,core,search}`
   resources.
 - **Hybrid retrieval** (dense + local BM25) with non-regressing `rescue` fusion

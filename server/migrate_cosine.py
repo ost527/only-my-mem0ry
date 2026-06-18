@@ -7,7 +7,7 @@ New installs already start in cosine (the server handles empty stores), so you
 only need this for stores created by older versions.
 
 USAGE -- stop the backend first so we have exclusive access to the store:
-    launchctl kill TERM gui/$(id -u)/com.mem0mcp.server   # or close all clients
+    launchctl kill TERM gui/$(id -u)/com.only-my-mem0ry.server   # or close all clients
     .venv/bin/python server/migrate_cosine.py
 
 A backup is written to <chroma_path>.bak.<timestamp> before migrating.
@@ -19,7 +19,7 @@ from mem0_store import (
     expand, is_backend_up, backup_store, prune_old_backups, recreate_collection_cosine,
 )
 
-PATH = expand(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma"))
+PATH = expand(os.environ.get("MEM0_CHROMA_PATH", "~/.only-my-mem0ry/chroma"))
 NAME = os.environ.get("MEM0_COLLECTION", "mem0")
 HOST = os.environ.get("MEM0_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MEM0_MCP_PORT", "8765"))
@@ -27,7 +27,7 @@ PORT = int(os.environ.get("MEM0_MCP_PORT", "8765"))
 # Refuse to run while the backend is up: concurrent Chroma access is unsafe.
 if is_backend_up(HOST, PORT):
     sys.exit(f"Backend is running on {HOST}:{PORT}. Stop it first:\n"
-             f"  launchctl kill TERM gui/$(id -u)/com.mem0mcp.server")
+             f"  launchctl kill TERM gui/$(id -u)/com.only-my-mem0ry.server")
 
 import chromadb  # noqa: E402  (deferred: skip the heavy import if the guard above exits)
 

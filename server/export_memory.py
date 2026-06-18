@@ -10,8 +10,8 @@ and created/updated dates. This is the local counterpart of memanto's
 `memory export` / `MEMORY.md` sync.
 
 Usage:
-    .venv/bin/python server/export_memory.py                 # -> ~/.mem0-mcp/MEMORY.md
-    .venv/bin/python server/export_memory.py --format json   # -> ~/.mem0-mcp/memory-export.json
+    .venv/bin/python server/export_memory.py                 # -> ~/.only-my-mem0ry/MEMORY.md
+    .venv/bin/python server/export_memory.py --format json   # -> ~/.only-my-mem0ry/memory-export.json
     .venv/bin/python server/export_memory.py --out /tmp/dump.md
 
 Options mirror the server env vars (MEM0_CHROMA_PATH, MEM0_COLLECTION,
@@ -74,7 +74,7 @@ def render_json(payload: dict) -> str:
 
 
 def main():
-    default_chroma = _expand(os.environ.get("MEM0_CHROMA_PATH", "~/.mem0-mcp/chroma"))
+    default_chroma = _expand(os.environ.get("MEM0_CHROMA_PATH", "~/.only-my-mem0ry/chroma"))
     state_dir = os.path.dirname(default_chroma)
     ap = argparse.ArgumentParser(description="Export all mem0 memories to Markdown or JSON.")
     ap.add_argument("--format", choices=["md", "json"], default="md", help="output format (default: md)")

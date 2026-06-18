@@ -4,7 +4,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.mem0mcp.server</string>
+    <string>com.only-my-mem0ry.server</string>
     <key>ProgramArguments</key>
     <array>
         <string>__PYTHON__</string>
@@ -30,8 +30,8 @@
     <key>ProcessType</key>
     <string>Background</string>
     <key>StandardOutPath</key>
-    <string>__HOME__/Library/Logs/mem0-mcp.log</string>
+    <string>__HOME__/Library/Logs/only-my-mem0ry.log</string>
     <key>StandardErrorPath</key>
-    <string>__HOME__/Library/Logs/mem0-mcp.log</string>
+    <string>__HOME__/Library/Logs/only-my-mem0ry.log</string>
 </dict>
 </plist>

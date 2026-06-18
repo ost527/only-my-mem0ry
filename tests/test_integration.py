@@ -4,7 +4,7 @@ These import mem0_mcp_server, which constructs the embedder + Chroma. They are
 skipped automatically wherever mem0 / chromadb / sentence-transformers are not
 installed (e.g. a CI job that installs only the dev tools), so the pure unit
 tests still run there. The server is pointed at a temp store BEFORE import, so
-the real ~/.mem0-mcp store and its single-writer lock are never touched.
+the real ~/.only-my-mem0ry store and its single-writer lock are never touched.
 """
 import os
 import re

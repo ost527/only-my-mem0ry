@@ -16,7 +16,7 @@ it again. No manual menu-bar toggle required.
 Env vars (all optional):
   MEM0_MCP_HOST            backend host (default: 127.0.0.1)
   MEM0_MCP_PORT            backend port (default: 8765)
-  MEM0_SERVER_LABEL        launchd label to kickstart (default: com.mem0mcp.server)
+  MEM0_SERVER_LABEL        launchd label to kickstart (default: com.only-my-mem0ry.server)
   MEM0_IDLE_TIMEOUT        backend idle timeout in s; sizes the keepalive (default: 600)
   MEM0_PROXY_KEEPALIVE     override keepalive interval in s (default: clamp(IDLE/3, 5, 120))
   MEM0_BACKEND_READY_TIMEOUT  seconds to wait for the backend to listen (default: 40)
@@ -35,7 +35,7 @@ from mem0_instructions import INSTRUCTIONS
 HOST = os.environ.get("MEM0_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MEM0_MCP_PORT", "8765"))
 URL = f"http://{HOST}:{PORT}/mcp"
-LABEL = os.environ.get("MEM0_SERVER_LABEL", "com.mem0mcp.server")
+LABEL = os.environ.get("MEM0_SERVER_LABEL", "com.only-my-mem0ry.server")
 IDLE_TIMEOUT = float(os.environ.get("MEM0_IDLE_TIMEOUT", "600"))
 KEEPALIVE = float(os.environ.get("MEM0_PROXY_KEEPALIVE", str(max(5.0, min(IDLE_TIMEOUT / 3, 120.0)))))
 READY_TIMEOUT = float(os.environ.get("MEM0_BACKEND_READY_TIMEOUT", "40"))
