@@ -12,6 +12,7 @@ import re
 import json
 import glob
 import time
+import fcntl
 import shutil
 import socket
 import logging
@@ -26,12 +27,67 @@ def expand(p: str) -> str:
 
 
 def atomic_write(path: str, text: str) -> None:
-    """Write text durably: write to a temp file then atomically rename over the
-    target, so a reader never sees a half-written file."""
+    """Write text durably: write to a temp file (flushed + fsync'd so the bytes
+    reach disk), then atomically rename over the target. A reader never sees a
+    half-written file, and the content survives a crash/power-loss after we
+    return -- not just an in-flight tear."""
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
+
+
+# ---- single-writer lock (one process may write the Chroma store at a time) ---
+# The in-process lock in the server only serializes calls WITHIN one backend; it
+# cannot stop a SECOND process (a second backend, or an offline tool like
+# migrate_*/ingest_file) from opening the same store and corrupting the HNSW
+# index with two concurrent writers. An advisory OS file lock on a lockfile inside
+# the store dir closes that gap for EVERY writer: whoever holds it writes; anyone
+# else refuses. Shared here so the backend and the offline tools enforce the very
+# same lock (not two different guards).
+WRITER_LOCKFILE = ".writer.lock"
+
+
+class SingleWriterLockError(RuntimeError):
+    """Raised when the store's single-writer lock is already held by another
+    process, so the caller must refuse to write rather than risk corruption."""
+
+    def __init__(self, chroma_path: str):
+        self.chroma_path = chroma_path
+        super().__init__(
+            f"another process holds the single-writer lock on {chroma_path}")
+
+
+def acquire_single_writer_lock(chroma_path: str, retry_seconds: float = 10.0):
+    """Acquire an exclusive, non-blocking advisory lock on the store dir so only
+    ONE process ever writes the Chroma store at a time (the backend OR an offline
+    tool -- never both). Returns the held-open file handle; the CALLER MUST keep a
+    reference for as long as it may write (the OS releases the lock when the handle
+    is closed or the process exits). On contention we retry briefly to ride out a
+    backend-restart race, then raise SingleWriterLockError. The pid is written to
+    the lockfile only AFTER the lock is held (the file is opened append+read and
+    truncated post-acquire), so a loser can never clobber the winner's pid."""
+    os.makedirs(chroma_path, exist_ok=True)
+    lockfile = os.path.join(chroma_path, WRITER_LOCKFILE)
+    fh = open(lockfile, "a+")                 # append+read: never truncates on open
+    deadline = time.monotonic() + max(0.0, retry_seconds)
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                fh.close()
+                raise SingleWriterLockError(chroma_path)
+            time.sleep(0.25)
+    # We hold the lock now: safe to record our pid (overwriting any stale content).
+    fh.seek(0)
+    fh.truncate(0)
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
 
 
 # ---- pin/usage sidecar (memory_meta.json) ------------------------------------
@@ -292,12 +348,22 @@ def prune_old_backups(path: str, keep: int) -> list:
 def recreate_collection_cosine(client, name: str, ids, embeddings, metadatas, documents=None):
     """Drop and recreate the named collection with cosine distance, re-adding the
     given vectors/payloads (preserving ids + metadata). `client` is an already-open
-    chromadb client, so this module never imports chromadb. Returns the new
-    collection; the caller is responsible for any count assertion."""
+    chromadb client, so this module never imports chromadb. The re-add is CHUNKED
+    so a large store can't exceed Chroma's max add-batch size (a single add() of
+    every vector throws above that limit). Returns the new collection; the caller
+    is responsible for any count assertion."""
     client.delete_collection(name)
     col = client.create_collection(name, metadata={"hnsw:space": "cosine"})
-    kw = dict(ids=ids, embeddings=embeddings, metadatas=metadatas)
-    if documents is not None:
-        kw["documents"] = documents
-    col.add(**kw)
+    try:
+        max_bs = int(client.get_max_batch_size())
+    except Exception:
+        max_bs = 5000
+    batch = max(1, min(max_bs, 5000))
+    for start in range(0, len(ids), batch):
+        end = start + batch
+        kw = dict(ids=ids[start:end], embeddings=embeddings[start:end],
+                  metadatas=metadatas[start:end])
+        if documents is not None:
+            kw["documents"] = documents[start:end]
+        col.add(**kw)
     return col

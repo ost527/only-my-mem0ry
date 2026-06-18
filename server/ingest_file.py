@@ -26,7 +26,10 @@ import sys
 import json
 import argparse
 
-from mem0_store import is_backend_up
+from mem0_store import (
+    is_backend_up, expand as _expand,
+    acquire_single_writer_lock, SingleWriterLockError,
+)
 
 _TEXT_EXTS = {".txt", ".text", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv"}
 
@@ -178,6 +181,16 @@ def main():
     if is_backend_up(host, port):
         sys.exit(f"Backend is running on {host}:{port}. Stop it first (or use --dry-run):\n"
                  f"  launchctl kill TERM gui/$(id -u)/com.only-my-mem0ry.server")
+
+    # Defense-in-depth: hold the SAME single-writer lock the backend uses BEFORE
+    # importing the server (which opens Chroma), so a client kickstarting the
+    # backend in the gap after the liveness check can't make us a second writer.
+    chroma_path = _expand(os.environ.get("MEM0_CHROMA_PATH", "~/.only-my-mem0ry/chroma"))
+    try:
+        _writer_lock = acquire_single_writer_lock(chroma_path)  # noqa: F841 (held for process life)
+    except SingleWriterLockError:
+        sys.exit("Another process holds the Chroma single-writer lock on "
+                 f"{chroma_path}. Stop the backend / other tools first.")
 
     res = ingest(args.path, user=args.user, target_chars=args.target_chars, overlap=args.overlap)
     if not res["chunks"]:

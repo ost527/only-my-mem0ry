@@ -2,12 +2,16 @@
 import os
 import socket
 
+import pytest
+
 from mem0_store import (
     expand, atomic_write, load_meta, save_meta,
     render_core_file, core_used, is_backend_up,
     normalize_tags, normalize_type, MEMORY_TYPES,
     normalize_origin, PROVENANCE_ORIGINS, prune_old_backups,
     normalize_confidence, CONFIDENCE_LEVELS, parse_date, date_of,
+    acquire_single_writer_lock, SingleWriterLockError, WRITER_LOCKFILE,
+    recreate_collection_cosine,
 )
 
 DEFAULTS = {"pinned": [], "access": {}, "tags": {}, "types": {}, "provenance": {},
@@ -262,3 +266,114 @@ class TestIsBackendUp:
             assert is_backend_up("127.0.0.1", port) is True
         finally:
             srv.close()
+
+
+class TestAtomicWriteDurability:
+    def test_content_still_correct_after_fsync(self, tmp_path):
+        # fsync is internal; just assert the durable write still produces the file
+        # (and that a follow-up overwrite works) so the added flush/fsync can't
+        # silently break the happy path.
+        p = tmp_path / "d.txt"
+        atomic_write(str(p), "first")
+        atomic_write(str(p), "second")
+        assert p.read_text(encoding="utf-8") == "second"
+        assert not (tmp_path / "d.txt.tmp").exists()
+
+
+class TestSingleWriterLock:
+    def test_acquire_writes_pid_and_blocks_second(self, tmp_path):
+        store = str(tmp_path / "chroma")
+        fh = acquire_single_writer_lock(store, retry_seconds=0)
+        try:
+            lock = tmp_path / "chroma" / WRITER_LOCKFILE
+            assert lock.read_text(encoding="utf-8") == str(os.getpid())
+            # a second acquire is refused while the first handle holds the lock
+            with pytest.raises(SingleWriterLockError):
+                acquire_single_writer_lock(store, retry_seconds=0)
+            # the loser must NOT have truncated the winner's pid out of the file
+            assert lock.read_text(encoding="utf-8") == str(os.getpid())
+        finally:
+            fh.close()
+
+    def test_releases_on_close_so_it_is_reacquirable(self, tmp_path):
+        store = str(tmp_path / "chroma")
+        fh = acquire_single_writer_lock(store, retry_seconds=0)
+        fh.close()                       # closing the handle frees the OS lock
+        fh2 = acquire_single_writer_lock(store, retry_seconds=0)
+        fh2.close()
+
+    def test_creates_missing_store_dir(self, tmp_path):
+        store = str(tmp_path / "deeper" / "chroma")
+        fh = acquire_single_writer_lock(store, retry_seconds=0)
+        try:
+            assert os.path.isdir(store)
+        finally:
+            fh.close()
+
+
+class _FakeCollection:
+    def __init__(self, metadata):
+        self.metadata = metadata
+        self.added = []          # one dict of kwargs per add() call
+
+    def add(self, **kw):
+        self.added.append(kw)
+
+
+class _FakeClient:
+    """Minimal stand-in for a chromadb client (no chromadb dependency in tests)."""
+
+    def __init__(self, max_bs=2):
+        self._max_bs = max_bs
+        self.deleted = []
+        self.created = None
+
+    def delete_collection(self, name):
+        self.deleted.append(name)
+
+    def create_collection(self, name, metadata=None):
+        self.created = _FakeCollection(metadata)
+        return self.created
+
+    def get_max_batch_size(self):
+        return self._max_bs
+
+
+class TestRecreateCollectionCosine:
+    def test_batches_when_over_max_and_preserves_order(self):
+        client = _FakeClient(max_bs=2)
+        ids = ["a", "b", "c", "d", "e"]
+        embs = [[0.1], [0.2], [0.3], [0.4], [0.5]]
+        metas = [{"i": i} for i in range(5)]
+        col = recreate_collection_cosine(client, "mem0", ids, embs, metas)
+        assert client.deleted == ["mem0"]
+        assert col.metadata == {"hnsw:space": "cosine"}
+        assert len(col.added) == 3                       # ceil(5 / 2)
+        assert [i for kw in col.added for i in kw["ids"]] == ids
+        assert [e for kw in col.added for e in kw["embeddings"]] == embs
+        assert [m for kw in col.added for m in kw["metadatas"]] == metas
+        assert all("documents" not in kw for kw in col.added)
+
+    def test_single_batch_when_under_max(self):
+        client = _FakeClient(max_bs=100)
+        col = recreate_collection_cosine(
+            client, "c", ["a", "b"], [[1.0], [2.0]], [{}, {}], documents=["d1", "d2"])
+        assert len(col.added) == 1
+        assert col.added[0]["documents"] == ["d1", "d2"]
+
+    def test_falls_back_when_max_batch_unavailable(self):
+        class _NoMaxClient:                      # older client w/o get_max_batch_size
+            def __init__(self):
+                self.created = None
+
+            def delete_collection(self, name):
+                pass
+
+            def create_collection(self, name, metadata=None):
+                self.created = _FakeCollection(metadata)
+                return self.created
+
+        client = _NoMaxClient()
+        col = recreate_collection_cosine(client, "c", ["a"], [[1.0]], [{}])
+        assert len(col.added) == 1
+        assert col.added[0]["ids"] == ["a"]

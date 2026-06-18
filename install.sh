@@ -13,6 +13,8 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 
 PORT="${MEM0_MCP_PORT:-8765}"
 IDLE="${MEM0_IDLE_TIMEOUT:-600}"
+EMBEDDER_MODEL="${MEM0_EMBEDDER_MODEL:-intfloat/multilingual-e5-small}"
+EMBEDDER_DIMS="${MEM0_EMBEDDER_DIMS:-384}"
 LA="$HOME/Library/LaunchAgents"
 SERVER_LABEL="com.only-my-mem0ry.server"
 
@@ -21,6 +23,7 @@ echo "    repo:        $REPO"
 echo "    mode:        direct store (no LLM); agent-driven memory"
 echo "    port:        $PORT"
 echo "    idle-exit:   ${IDLE}s"
+echo "    embedder:    $EMBEDDER_MODEL (${EMBEDDER_DIMS} dims)"
 
 # ---- prerequisites ----
 command -v python3 >/dev/null || { echo "ERROR: python3 not found (need Python 3.10+)"; exit 1; }
@@ -42,6 +45,8 @@ sed -e "s|__PYTHON__|$PYTHON|g" \
     -e "s|__SERVER_SCRIPT__|$REPO/server/mem0_mcp_server.py|g" \
     -e "s|__PORT__|$PORT|g" \
     -e "s|__IDLE__|$IDLE|g" \
+    -e "s|__EMBEDDER_MODEL__|$EMBEDDER_MODEL|g" \
+    -e "s|__EMBEDDER_DIMS__|$EMBEDDER_DIMS|g" \
     -e "s|__HOME__|$HOME|g" \
     "$REPO/launchd/$SERVER_LABEL.plist.template" > "$LA/$SERVER_LABEL.plist"
 

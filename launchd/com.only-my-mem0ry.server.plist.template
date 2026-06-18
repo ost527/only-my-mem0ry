@@ -20,6 +20,10 @@
         <string>__PORT__</string>
         <key>MEM0_IDLE_TIMEOUT</key>
         <string>__IDLE__</string>
+        <key>MEM0_EMBEDDER_MODEL</key>
+        <string>__EMBEDDER_MODEL__</string>
+        <key>MEM0_EMBEDDER_DIMS</key>
+        <string>__EMBEDDER_DIMS__</string>
         <key>PATH</key>
         <string>__PYBIN_DIR__:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>

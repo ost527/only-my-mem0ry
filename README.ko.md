@@ -427,8 +427,12 @@ Chroma writer는 정확히 하나뿐입니다.
 
 ## 설정(Configuration)
 
-**백엔드** (`server/mem0_mcp_server.py`; `launchd/com.only-my-mem0ry.server.plist.template`에
-설정한 뒤 `install.sh` 재실행, 또는 `install.sh`에 전달):
+**백엔드** (`server/mem0_mcp_server.py`). `install.sh`는 `MEM0_MCP_PORT`,
+`MEM0_IDLE_TIMEOUT`, `MEM0_EMBEDDER_MODEL`, `MEM0_EMBEDDER_DIMS`를 전달하면 launchd
+에이전트에 반영합니다(예: `MEM0_EMBEDDER_MODEL=… MEM0_EMBEDDER_DIMS=… ./install.sh`).
+아래의 **그 외** 변수를 설정하려면 `launchd/com.only-my-mem0ry.server.plist.template`을
+편집한 뒤 `install.sh`를 재실행하거나(또는 생성된
+`~/Library/LaunchAgents/com.only-my-mem0ry.server.plist`을 직접 편집), 다시 로드하세요:
 
 | 변수 | 기본값 | 설명 |
 |-----|---------|-------|

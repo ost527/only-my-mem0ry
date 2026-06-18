@@ -452,9 +452,12 @@ writer even with several clients open at once.
 
 ## Configuration
 
-**Backend** (`server/mem0_mcp_server.py`; set in
-`launchd/com.only-my-mem0ry.server.plist.template`, then re-run `install.sh`, or pass to
-`install.sh`):
+**Backend** (`server/mem0_mcp_server.py`). `install.sh` forwards `MEM0_MCP_PORT`,
+`MEM0_IDLE_TIMEOUT`, `MEM0_EMBEDDER_MODEL`, and `MEM0_EMBEDDER_DIMS` into the launchd
+agent when you pass them (e.g. `MEM0_EMBEDDER_MODEL=… MEM0_EMBEDDER_DIMS=… ./install.sh`).
+To set any **other** variable below, edit
+`launchd/com.only-my-mem0ry.server.plist.template` and re-run `install.sh` (or edit the
+generated `~/Library/LaunchAgents/com.only-my-mem0ry.server.plist` directly), then reload it:
 
 | Var | Default | Notes |
 |-----|---------|-------|

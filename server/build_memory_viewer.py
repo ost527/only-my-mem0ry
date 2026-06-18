@@ -37,7 +37,7 @@ def load_memories(chroma_path: str, collection: str, user: str) -> list:
     out = []
     for mid, meta in zip(ids, metas):
         meta = meta or {}
-        if user and meta.get("user_id") not in (None, user):
+        if user and meta.get("user_id") != user:   # exact match, like the server's get_all
             continue
         out.append({
             "id": mid,
@@ -244,7 +244,7 @@ TEMPLATE = r"""<!DOCTYPE html>
     return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
   }
   function fmtDay(s){ return s ? String(s).slice(0,10) : '—'; }
-  function esc(s){ return s.replace(/[&<>]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+  function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
   function highlight(text, q){
     var safe = esc(text);
     if(!q) return safe;

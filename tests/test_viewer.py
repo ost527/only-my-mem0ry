@@ -116,3 +116,12 @@ def test_load_meta_missing_is_empty(tmp_path):
     pinned, access, tags, types, provenance, confidence = v.load_meta(str(tmp_path / "none.json"))
     assert pinned == set() and access == {} and tags == {} and types == {}
     assert provenance == {} and confidence == {}
+
+
+def test_template_esc_escapes_quotes():
+    # The client-side esc() must neutralize quotes too, so a memory id/text can
+    # never break out of the data-id="..." attribute it is interpolated into.
+    assert "&quot;" in v.TEMPLATE
+    assert "&#39;" in v.TEMPLATE
+    # and the JSON payload marker is still present for injection
+    assert "__DATA_JSON__" in v.TEMPLATE

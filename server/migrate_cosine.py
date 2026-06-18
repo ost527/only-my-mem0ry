@@ -17,6 +17,7 @@ import sys
 
 from mem0_store import (
     expand, is_backend_up, backup_store, prune_old_backups, recreate_collection_cosine,
+    acquire_single_writer_lock, SingleWriterLockError,
 )
 
 PATH = expand(os.environ.get("MEM0_CHROMA_PATH", "~/.only-my-mem0ry/chroma"))
@@ -33,6 +34,16 @@ import chromadb  # noqa: E402  (deferred: skip the heavy import if the guard abo
 
 if not os.path.isdir(PATH):
     sys.exit(f"No Chroma store at {PATH}")
+
+# Defense-in-depth: take the SAME single-writer lock the backend uses, so even if
+# a client kickstarts the backend in the window between the liveness check above
+# and our writes, exactly one of us proceeds instead of two writers corrupting the
+# store. Held for the whole process; the OS frees it on exit.
+try:
+    _writer_lock = acquire_single_writer_lock(PATH)
+except SingleWriterLockError:
+    sys.exit("Another process holds the Chroma single-writer lock on "
+             f"{PATH}. Stop the backend / other tools first.")
 
 backup = backup_store(PATH)
 print("backup:", backup)

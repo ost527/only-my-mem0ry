@@ -41,7 +41,6 @@ Env vars (all optional):
 import os
 import time
 import json
-import fcntl
 import signal
 import asyncio
 import logging
@@ -56,6 +55,8 @@ from mem0_instructions import INSTRUCTIONS
 from mem0_store import (
     expand as _expand,
     atomic_write,
+    acquire_single_writer_lock,
+    SingleWriterLockError,
     load_meta,
     save_meta,
     render_core_file,
@@ -83,40 +84,30 @@ os.makedirs(CHROMA_PATH, exist_ok=True)
 
 # Single Chroma writer, enforced at the OS level. The in-process _store_lock only
 # serializes calls WITHIN this backend; it cannot protect against a *second*
-# backend process opening the same store (the worst corruption/data-loss vector).
-# An advisory file lock (fcntl.flock) on a lockfile inside the store dir closes
-# that gap: a second writer simply refuses to start.
-_SINGLE_WRITER_LOCKFILE = os.path.join(CHROMA_PATH, ".writer.lock")
+# backend process (or an offline tool) opening the same store (the worst
+# corruption/data-loss vector). An advisory file lock (fcntl.flock) on a lockfile
+# inside the store dir closes that gap: a second writer simply refuses to start.
+# The acquire/retry/truncate logic is shared in mem0_store so the backend and the
+# offline tools (migrate_*/ingest_file) enforce the exact same lock.
 _single_writer_fh = None  # held open for the process lifetime; OS frees it on exit
 
 
 def _acquire_single_writer_lock(retry_seconds: float = 10.0) -> None:
-    """Acquire an exclusive, non-blocking advisory lock BEFORE Chroma is opened so
+    """Acquire the store's exclusive single-writer lock BEFORE Chroma is opened so
     a second backend can never open the same store concurrently. On contention we
     retry briefly to ride out the restart race where an old backend is still
     exiting (launchd KeepAlive=false won't relaunch us, but the proxy re-kickstarts
     on the next call); if still locked, we log and exit rather than become a second
     writer. The fd is held for the whole process; the OS releases it on exit."""
     global _single_writer_fh
-    fh = open(_SINGLE_WRITER_LOCKFILE, "w")
-    deadline = time.monotonic() + max(0.0, retry_seconds)
-    while True:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except OSError:
-            if time.monotonic() >= deadline:
-                fh.close()
-                logger.error(
-                    "another mem0 backend already holds the writer lock on %s; "
-                    "refusing to start a second Chroma writer", CHROMA_PATH,
-                )
-                raise SystemExit(1)
-            time.sleep(0.25)
-    fh.truncate(0)
-    fh.write(str(os.getpid()))
-    fh.flush()
-    _single_writer_fh = fh
+    try:
+        _single_writer_fh = acquire_single_writer_lock(CHROMA_PATH, retry_seconds)
+    except SingleWriterLockError:
+        logger.error(
+            "another mem0 backend already holds the writer lock on %s; "
+            "refusing to start a second Chroma writer", CHROMA_PATH,
+        )
+        raise SystemExit(1)
     logger.info("acquired single-writer lock on %s (pid %d)", CHROMA_PATH, os.getpid())
 
 
