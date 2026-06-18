@@ -119,6 +119,7 @@ no need for the agent to *remember* to search:
 |------|------|--------------|
 | Prompt | `load_context(query?)` | Pull relevant memories into the conversation as context — invoke at the start of a task so the agent recalls instead of re-asking. No query = list all. |
 | Prompt | `curate_memories()` | Maintenance pass: full inventory + usage stats, with instructions for the agent to merge duplicates, drop stale facts, rewrite, and re-balance core. |
+| Prompt | `answer(query)` | Answer a question grounded **only** in stored memory — the server retrieves the relevant memories and frames them; the agent answers from them with `[id]` citations (the local, no-LLM equivalent of a RAG `answer`). |
 | Resource | `memory://all` | All stored memories (with IDs). |
 | Resource | `memory://core` | The pinned always-on **core** set. |
 | Resource | `memory://search/{query}` | Hybrid-ranked memories for `query`. |

@@ -4,6 +4,19 @@ All notable changes to **local-mem0-mcp** are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/); the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Working toward **0.5.0** (memanto gap-analysis Phase 1; see
+`docs/memanto-gap-analysis.md`).
+
+### Added
+- **`answer(query)` prompt** — a grounded-QA prompt that retrieves the most
+  relevant memories and frames them so the calling agent answers **only** from
+  them, citing each `[id]` (and says so when memory is insufficient rather than
+  guessing). This is the local, **no-LLM** equivalent of memanto's RAG `answer`
+  primitive: the server retrieves, the client LLM generates — no second model,
+  no API key. Retrieval logic lives in the unit-tested helper `_answer_context`.
+
 ## [0.4.0] — 2026-06-18
 
 ### Added

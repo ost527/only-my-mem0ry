@@ -899,6 +899,49 @@ def curate_memories() -> str:
     return "\n".join(lines)
 
 
+def _answer_context(question: str, uid: str = "") -> str:
+    """Build a grounded-answer prompt: retrieve the most relevant memories for
+    `question` and frame them so the CALLING LLM answers FROM them (with [id]
+    citations) instead of guessing. Pure retrieval + framing -- there is NO
+    server-side LLM call (the client is the brain). Kept as a plain function so it
+    is unit-testable independently of the MCP prompt wrapper."""
+    uid = uid or DEFAULT_USER
+    with _store_lock:
+        results = _semantic_search(question, uid, SEARCH_TOPK)
+        _record_access([r.get("id") for r in results])
+    if not results:
+        return (f"No stored memory is relevant to: {question!r}\n\n"
+                "Tell the user nothing is saved on this yet — do NOT guess — and offer "
+                "to add_memory the answer once it is known.")
+    lines = [
+        "Answer the question using ONLY the memories below. Do not use outside "
+        "knowledge. Cite the [id] of every memory you rely on.",
+        "",
+        f"Question: {question}",
+        "",
+        "Relevant memories (most relevant first):",
+        "",
+    ]
+    lines += [f"- [id: {r.get('id', 'N/A')}] {r.get('memory', '(empty)')}" for r in results]
+    lines += [
+        "",
+        "Rules: be concise and cite [id]s; if the memories are insufficient or "
+        "contradict each other, say so explicitly instead of guessing; if any is "
+        "outdated, reconcile it with update_memory / delete_memory.",
+    ]
+    return "\n".join(lines)
+
+
+@mcp.prompt()
+def answer(question: str) -> str:
+    """Answer a question grounded ONLY in stored long-term memory. The server
+    retrieves the most relevant memories and frames them; YOU (the calling LLM)
+    write the answer from them, citing each [id] you use -- this is the local,
+    no-LLM server's equivalent of a RAG `answer` (retrieval here, generation by
+    you). If the memories don't contain the answer, say so rather than guessing."""
+    return _answer_context(question)
+
+
 @mcp.resource("memory://all")
 def memory_all() -> str:
     """All stored memories for the default user, as readable text (with IDs)."""

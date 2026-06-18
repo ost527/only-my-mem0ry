@@ -164,6 +164,21 @@ def test_search_combines_tag_and_type_filters(srv):
     assert "Beta uses Redis" not in got   # excluded by tag filter (it is proj-b)
 
 
+def test_answer_grounds_in_retrieved_memory(srv):
+    uid = "test_answer"
+    srv.add_memory("The prod database listens on port 6543.", user_id=uid)
+    out = srv._answer_context("which port does the prod database use?", uid=uid)
+    assert "6543" in out                      # the relevant memory was retrieved
+    assert "ONLY the memories" in out         # grounding instruction present
+    assert "[id:" in out and "cite" in out.lower()
+
+
+def test_answer_handles_no_results_without_guessing(srv):
+    out = srv._answer_context("a totally unstored topic zzzq", uid="test_answer_empty")
+    assert "guess" in out.lower()             # instructs the agent NOT to guess
+    assert "6543" not in out
+
+
 def test_update_resyncs_core_file_for_pinned(srv):
     uid = "test_updcore"
     mid = _new_id(srv.add_memory("ORIGINAL fact about PORT 1234", user_id=uid))
