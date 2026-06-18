@@ -4,18 +4,120 @@ All notable changes to **local-mem0-mcp** are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/); the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.0] — 2026-06-18
 
-Working toward **0.5.0** (memanto gap-analysis Phase 1; see
-`docs/memanto-gap-analysis.md`).
+memanto gap-analysis **Phase 4** (file ingest + batch add). See
+`docs/memanto-gap-analysis.md`.
+
+### Added
+- **File ingest CLI** (`server/ingest_file.py`) — turn a file into memories
+  (memanto's `upload`, the local way). Extracts text, splits it into
+  **deterministic** chunks (paragraph boundaries, size target + slight overlap;
+  no LLM, no summarization), and stores each chunk tagged with the filename and
+  marked `origin=imported`, `source=file:<name>#chunk<i>`. `.txt/.md/.csv/.tsv/
+  .json/.log` need only the stdlib; **PDF/DOCX/XLSX use optional parsers isolated
+  in `requirements-ingest.txt`** (pypdf / python-docx / openpyxl) so they are
+  installed only by people who ingest those formats. `--dry-run` previews chunks
+  without writing; writing refuses while the backend is up (same exclusive-access
+  rule as the migration scripts). Pure helpers `extract_text` / `chunk_text` are
+  unit-tested.
+- **Batch add** — new tool `add_memories(items_json)` stores MANY memories in ONE
+  locked pass (the bulk counterpart of `add_memory`). `items_json` is a JSON array
+  of `{text, tags?, mem_type?, origin?, source?, confidence?}`; lenient (an item
+  with an unknown type/origin/confidence is still stored with the bad field
+  dropped + flagged; an item with no text is skipped). Returns the new ids plus a
+  summary of warnings and near-duplicate flags. Shared core `_add_many` is reused
+  by the ingest CLI.
+
+## [0.7.0] — 2026-06-18
+
+memanto gap-analysis **Phase 3** (conflict candidates + recency tie-break).
+
+### Added
+- **Conflict candidates** (pure, deterministic, **no LLM**) surfaced in
+  `curate_memories`: memory pairs whose cosine similarity is in the "same topic"
+  band `[MEM0_CONFLICT_LOW, MEM0_DUP_THRESHOLD)` **and** that disagree on a
+  discriminator (a number, a weekday, a boolean/antonym, or a negation) are flagged
+  as **suspected contradictions** for the agent to confirm and reconcile — the same
+  "client is the brain" philosophy as the duplicate clusters. New pure helper
+  `is_conflict_pair` in `server/mem0_retrieval.py` (unit-tested); the cosine band is
+  computed in the server from the stored embeddings (`_conflict_candidates`). New
+  config `MEM0_CONFLICT_LOW` (default `0.80`).
+- **Opt-in recency / confidence tie-break** — `MEM0_RECENCY_BIAS` and
+  `MEM0_CONFIDENCE_BIAS` (**both default `0` = OFF**). When `> 0` they add a small
+  recency / confidence nudge over the fused ranking via the pure, unit-tested
+  `rerank_with_bias`; a weight `< 1` can only break **near-ties** (it never reorders
+  a clear ranking, so it is provably non-regressing), while `>= 1` can reorder
+  (measure with `server/eval_recall.py` first). Default-off means the ranking — and
+  the recall eval — are **byte-identical** to before.
+
+## [0.6.0] — 2026-06-18
+
+memanto gap-analysis **Phase 2** (versioning / no silent overwrite).
+
+### Added
+- **Version history** — `update_memory` and `delete_memory` now **archive the prior
+  text** to a `history` map in the sidecar before mutating (principle: never destroy
+  without a backup), capped at `MEM0_HISTORY_DEPTH` entries per memory (default `5`;
+  `0` disables). A deleted memory's history is **kept** so it can still be inspected
+  and restored.
+  - New tool `memory_history(id)` lists the archived versions (newest first) plus the
+    current text.
+  - New tool `restore_memory(id, n)` restores version `n` (n=1 = most recent prior).
+    If the memory still exists it is updated in place (the current text is archived
+    first, so a restore is itself reversible); if it was deleted, the old text is
+    re-added as a **new** memory id (its tags/type/provenance/confidence are not
+    carried over).
+  - `load_meta` now defaults a `"history"` map (backward-compatible; no migration).
+
+## [0.5.0] — 2026-06-18
+
+memanto gap-analysis **Phase 1** (provenance · confidence · temporal · `answer` ·
+export). All of it is sidecar metadata, post-filtering, or a prompt/CLI, so the
+dense+BM25 ranking path is untouched (`server/eval_recall.py` non-regressing).
 
 ### Added
 - **`answer(query)` prompt** — a grounded-QA prompt that retrieves the most
   relevant memories and frames them so the calling agent answers **only** from
   them, citing each `[id]` (and says so when memory is insufficient rather than
-  guessing). This is the local, **no-LLM** equivalent of memanto's RAG `answer`
-  primitive: the server retrieves, the client LLM generates — no second model,
-  no API key. Retrieval logic lives in the unit-tested helper `_answer_context`.
+  guessing). The local, **no-LLM** equivalent of memanto's RAG `answer` primitive:
+  the server retrieves, the client LLM generates. Retrieval logic lives in the
+  unit-tested helper `_answer_context`.
+- **Provenance** — each memory can record WHERE it came from: an `origin` from a
+  fixed vocabulary (`explicit`, `inferred`, `imported`) plus a free-text `source`
+  (e.g. `"user chat"`, `"file:report.pdf"`). `add_memory(…, origin=, source=)`
+  (lenient: an unknown origin is ignored with a warning, the memory is still
+  stored), new tool `set_provenance(id, origin, source)` (strict; both empty
+  clears), and `search_memories(…, origin=)` post-filter. Rendered as
+  `«origin · source»`; new helpers `PROVENANCE_ORIGINS` / `normalize_origin`.
+- **Confidence** — each memory can carry a coarse, deterministic confidence
+  (`low`, `medium`, `high` — no fake numeric precision; the agent judges it).
+  `add_memory(…, confidence=)` (lenient), new tool `set_confidence(id, value)`
+  (strict; empty clears), and `search_memories(…, min_confidence=)` keeps only
+  memories rated at least that confident (memories with **no** confidence are
+  excluded when the gate is set). Rendered as `(conf: …)`; `curate_memories` uses it
+  as a re-review hint. New helpers `CONFIDENCE_LEVELS` / `CONFIDENCE_RANK` /
+  `normalize_confidence`.
+- **Temporal filters** — `search_memories(…, since=, until=, changed_since=)` and
+  `list_memories(…, since=, until=)` scope by date (`YYYY-MM-DD`, inclusive, day
+  granularity): `since`/`until` filter by CREATED date, `changed_since` by
+  last-CHANGED date (updated, else created). Pure post-filter over the existing
+  `created_at`/`updated_at` payload (no extra storage). New helpers
+  `parse_date` / `date_of`.
+- **Full export CLI** (`server/export_memory.py`) — dump ALL memories to a single
+  Markdown (`MEMORY.md`-style) or JSON file with id, text, type, tags, provenance,
+  confidence, and created/updated dates. Reads the Chroma store + sidecar directly
+  (no model, no LLM, no running backend), like the HTML viewer. The local
+  counterpart of memanto's `memory export` / `MEMORY.md` sync. Pure render
+  functions (`render_markdown` / `render_json`) are unit-tested.
+
+### Notes
+- The HTML viewer (`server/build_memory_viewer.py`) gains **provenance** and
+  **confidence** filter dropdowns + clickable chips (alongside the existing type/tag
+  filters).
+- Sidecar (`memory_meta.json`) schema grew `provenance`, `confidence`, and `history`
+  maps; `load_meta` defaults them, so existing stores upgrade with **no migration**.
+  `delete_memory` cleans every per-memory map (history excepted — see 0.6.0).
 
 ## [0.4.0] — 2026-06-18
 
@@ -110,6 +212,10 @@ lifecycle, and one shared Chroma writer across all clients.
   Korean-heavy / bilingual stores — switch with `server/migrate_reembed.py`.
 - Migration scripts support opt-in backup pruning via `MEM0_BACKUP_KEEP`.
 
+[0.8.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.8.0
+[0.7.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.7.0
+[0.6.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.6.0
+[0.5.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.5.0
 [0.4.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.4.0
 [0.3.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.2.0

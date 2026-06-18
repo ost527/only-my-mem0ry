@@ -5,10 +5,13 @@ import socket
 from mem0_store import (
     expand, atomic_write, load_meta, save_meta,
     render_core_file, core_used, is_backend_up,
-    normalize_tags, normalize_type, MEMORY_TYPES, prune_old_backups,
+    normalize_tags, normalize_type, MEMORY_TYPES,
+    normalize_origin, PROVENANCE_ORIGINS, prune_old_backups,
+    normalize_confidence, CONFIDENCE_LEVELS, parse_date, date_of,
 )
 
-DEFAULTS = {"pinned": [], "access": {}, "tags": {}, "types": {}}
+DEFAULTS = {"pinned": [], "access": {}, "tags": {}, "types": {}, "provenance": {},
+            "confidence": {}, "history": {}}
 
 
 class TestExpand:
@@ -60,6 +63,7 @@ class TestMeta:
             "access": {"id1": {"count": 2, "last": "2026-06-14"}},
             "tags": {"id1": ["proj", "infra"]},
             "types": {"id1": "decision"},
+            "provenance": {"id1": {"origin": "explicit", "source": "user chat"}},
             "extra": "쿠팡",
         }
         save_meta(p, meta)
@@ -68,6 +72,7 @@ class TestMeta:
         assert loaded["access"]["id1"]["count"] == 2
         assert loaded["tags"]["id1"] == ["proj", "infra"]
         assert loaded["types"]["id1"] == "decision"
+        assert loaded["provenance"]["id1"]["origin"] == "explicit"
         assert loaded["extra"] == "쿠팡"
 
     def test_save_empty_dict_then_load_has_defaults(self, tmp_path):
@@ -141,6 +146,80 @@ class TestNormalizeType:
         assert MEMORY_TYPES == tuple(t.lower() for t in MEMORY_TYPES)
         for core in ("fact", "preference", "decision", "instruction", "error"):
             assert core in MEMORY_TYPES
+
+
+class TestNormalizeOrigin:
+    def test_empty_inputs_return_empty_string(self):
+        assert normalize_origin("") == ""
+        assert normalize_origin(None) == ""
+        assert normalize_origin("   ") == ""
+
+    def test_valid_origin_is_canonicalized(self):
+        assert normalize_origin("explicit") == "explicit"
+        assert normalize_origin("INFERRED") == "inferred"
+        assert normalize_origin("  #Imported  ") == "imported"
+
+    def test_every_origin_is_accepted(self):
+        for o in PROVENANCE_ORIGINS:
+            assert normalize_origin(o) == o
+            assert normalize_origin(o.upper()) == o
+
+    def test_unknown_origin_returns_none(self):
+        assert normalize_origin("guess") is None
+        assert normalize_origin("explicitly") is None      # no fuzzy matching
+
+    def test_vocabulary_is_the_expected_three(self):
+        assert PROVENANCE_ORIGINS == ("explicit", "inferred", "imported")
+
+
+class TestNormalizeConfidence:
+    def test_empty_inputs_return_empty_string(self):
+        assert normalize_confidence("") == ""
+        assert normalize_confidence(None) == ""
+        assert normalize_confidence("   ") == ""
+
+    def test_valid_confidence_is_canonicalized(self):
+        assert normalize_confidence("high") == "high"
+        assert normalize_confidence("MEDIUM") == "medium"
+        assert normalize_confidence("  #Low  ") == "low"
+
+    def test_every_level_is_accepted(self):
+        for c in CONFIDENCE_LEVELS:
+            assert normalize_confidence(c) == c
+            assert normalize_confidence(c.upper()) == c
+
+    def test_unknown_confidence_returns_none(self):
+        assert normalize_confidence("certain") is None
+        assert normalize_confidence("0.9") is None        # no numeric precision
+        assert normalize_confidence("hi") is None
+
+    def test_vocabulary_is_low_medium_high(self):
+        assert CONFIDENCE_LEVELS == ("low", "medium", "high")
+
+
+class TestParseDate:
+    def test_empty_inputs_return_empty_string(self):
+        assert parse_date("") == ""
+        assert parse_date(None) == ""
+        assert parse_date("   ") == ""
+
+    def test_plain_date_passthrough(self):
+        assert parse_date("2026-06-14") == "2026-06-14"
+
+    def test_iso_timestamp_truncated_to_date(self):
+        assert parse_date("2026-06-14T10:30:00") == "2026-06-14"
+        assert parse_date("2026-06-14T10:30:00+09:00") == "2026-06-14"
+
+    def test_invalid_returns_none(self):
+        assert parse_date("not-a-date") is None
+        assert parse_date("2026/06/14") is None          # wrong separator
+        assert parse_date("2026-13-01") is None          # impossible month
+
+    def test_date_of_takes_day_prefix(self):
+        assert date_of("2026-06-14T10:30:00") == "2026-06-14"
+        assert date_of("2026-06-14") == "2026-06-14"
+        assert date_of("") == ""
+        assert date_of(None) == ""
 
 
 class TestPruneOldBackups:

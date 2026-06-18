@@ -1,5 +1,8 @@
 """Unit tests for the pure retrieval primitives (no embedder / Chroma needed)."""
-from mem0_retrieval import tokenize, bm25_rank, rrf_merge, fuse_rescue, cluster_by_pairs
+from mem0_retrieval import (
+    tokenize, bm25_rank, rrf_merge, fuse_rescue, cluster_by_pairs,
+    rerank_with_bias, is_conflict_pair,
+)
 
 
 def _corpus(*pairs):
@@ -119,3 +122,64 @@ class TestClusterByPairs:
         # 'solo' is never in a pair -> excluded
         cl = cluster_by_pairs([("a", "b")])
         assert all("solo" not in c for c in cl) and cl == [["a", "b"]]
+
+
+class TestRerankWithBias:
+    def _r(self, *ids):
+        return [{"id": i, "memory": i} for i in ids]
+
+    def test_zero_weight_is_noop(self):
+        results = self._r("a", "b", "c")
+        out = rerank_with_bias(results, {"a": 0.0, "b": 1.0, "c": 0.5}, 0)
+        assert [r["id"] for r in out] == ["a", "b", "c"]
+
+    def test_small_weight_only_breaks_near_ties_not_clear_ranking(self):
+        # rank gaps are 1; weight < 1 can never overtake a clearly-higher item.
+        results = self._r("a", "b", "c")          # a is rank-1 (best)
+        out = rerank_with_bias(results, {"a": 0.0, "b": 1.0, "c": 1.0}, 0.5)
+        assert [r["id"] for r in out] == ["a", "b", "c"]   # order preserved
+
+    def test_large_weight_can_reorder_by_bias(self):
+        results = self._r("a", "b", "c")
+        out = rerank_with_bias(results, {"a": 0.0, "b": 0.0, "c": 1.0}, 5)
+        assert out[0]["id"] == "c"                 # strong bias promotes c
+
+    def test_stable_for_equal_scores(self):
+        results = self._r("a", "b", "c")
+        out = rerank_with_bias(results, {"a": 0.0, "b": 0.0, "c": 0.0}, 1)
+        assert [r["id"] for r in out] == ["a", "b", "c"]   # original order kept
+
+    def test_empty_results(self):
+        assert rerank_with_bias([], {}, 5) == []
+
+
+class TestIsConflictPair:
+    def test_differing_numbers_conflict(self):
+        assert is_conflict_pair("the db listens on port 5432",
+                                "the db listens on port 5433")
+
+    def test_differing_weekdays_conflict(self):
+        assert is_conflict_pair("we deploy on Friday", "we deploy on Monday")
+
+    def test_antonym_flip_conflict(self):
+        assert is_conflict_pair("feature X is enabled", "feature X is disabled")
+
+    def test_negation_asymmetry_conflict(self):
+        assert is_conflict_pair("the cache is cleared on boot",
+                                "the cache is not cleared on boot")
+
+    def test_identical_text_is_not_a_conflict(self):
+        assert not is_conflict_pair("port is 5432", "port is 5432")
+
+    def test_unrelated_text_is_not_a_conflict(self):
+        assert not is_conflict_pair("the db listens on port 5432",
+                                    "the office cat naps by the window")
+
+    def test_same_subject_same_number_not_conflict(self):
+        # high overlap but they AGREE -> not a conflict candidate
+        assert not is_conflict_pair("the db listens on port 5432",
+                                    "the db also listens on port 5432")
+
+    def test_empty_inputs(self):
+        assert not is_conflict_pair("", "anything")
+        assert not is_conflict_pair("anything", "")

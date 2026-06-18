@@ -102,13 +102,18 @@ starts and loads the embedder); after that it's instant.
 
 | Tool | What it does |
 |------|--------------|
-| `add_memory(text, user_id?, tags?, mem_type?)` | Store a fact verbatim. Optional `tags` (e.g. a project name) scope later search; optional `mem_type` sets ONE semantic category (see [Memory types](#memory-types-typed-semantic-memory)). Returns the nearest existing memories so you can reconcile. |
-| `update_memory(id, text)` | Replace/merge an existing memory (avoid duplicates). |
-| `delete_memory(id)` | Remove an outdated or contradicted memory. |
-| `search_memories(query, user_id?, tags?, mem_type?)` | Semantic search; optional `tags` (ANY-match) and/or `mem_type` scope results (the two filters combine, AND). Returns memories **with IDs** (📌 pinned, `[type]`, `#tags` shown). |
+| `add_memory(text, user_id?, tags?, mem_type?, origin?, source?, confidence?)` | Store a fact verbatim. Optional `tags` (e.g. a project name) scope later search; `mem_type` sets ONE semantic category; `origin`/`source` record [provenance](#provenance--confidence-where-it-came-from-how-sure); `confidence` (`low`/`medium`/`high`) records how sure you are. Returns the nearest existing memories so you can reconcile. |
+| `add_memories(items_json, user_id?)` | **Batch**-store many memories in ONE locked pass — `items_json` is a JSON array of `{text, tags?, mem_type?, origin?, source?, confidence?}`. |
+| `update_memory(id, text)` | Replace/merge an existing memory (avoid duplicates). The prior text is archived to [history](#versioning--history-no-silent-overwrite) first. |
+| `delete_memory(id)` | Remove an outdated or contradicted memory (prior text archived to history). |
+| `search_memories(query, user_id?, tags?, mem_type?, origin?, min_confidence?, since?, until?, changed_since?)` | Semantic search with optional post-filters that **combine (AND)**: `tags` (ANY-match), `mem_type`, `origin`, `min_confidence`, and date windows (`since`/`until` by created, `changed_since` by updated). Returns memories **with IDs** (📌 pinned, `[type]`, «provenance», `(conf: …)`, `#tags` shown). |
 | `tag_memory(id, tags)` | Set/replace a memory's tags (empty string clears). Tags live in the sidecar, so they survive `update_memory`. |
-| `set_memory_type(id, mem_type)` | Set/replace a memory's semantic **type** — one of 13 categories (empty string clears). Lives in the sidecar, so it survives `update_memory`. |
-| `list_memories(user_id?)` | List everything stored (with IDs; 📌 pinned, `[type]`, `#tags` shown). |
+| `set_memory_type(id, mem_type)` | Set/replace a memory's semantic **type** — one of 13 categories (empty string clears). |
+| `set_provenance(id, origin?, source?)` | Set/replace a memory's **provenance** — `origin` ∈ explicit/inferred/imported + free-text `source` (both empty clears). |
+| `set_confidence(id, confidence?)` | Set/replace a memory's **confidence** — `low`/`medium`/`high` (empty string clears). |
+| `memory_history(id)` | Show a memory's archived prior versions (newest first) plus the current text. |
+| `restore_memory(id, n?)` | Restore prior version `n` (n=1 = most recent); re-adds as a NEW id if the memory was deleted. |
+| `list_memories(user_id?, since?, until?)` | List everything stored (optionally within a created-date window); IDs + 📌/`[type]`/«provenance»/`(conf:…)`/`#tags` shown. |
 | `pin_memory(id)` | Pin a memory into always-on **core** (mirrored to a file your rules load every session). Bounded by `MEM0_CORE_BUDGET`. |
 | `unpin_memory(id)` | Remove from core; the memory stays stored and searchable. |
 
@@ -241,6 +246,72 @@ pure post-filter over hybrid search.
 
 ---
 
+## Provenance & confidence (where it came from, how sure)
+
+Two more sidecar dimensions let the agent record *how trustworthy* a memory is and
+*where it came from* (inspired by [memanto](https://github.com/moorcheh-ai/memanto)):
+
+- **Provenance** — `origin` (a fixed vocabulary: `explicit` = the user stated it,
+  `inferred` = you deduced it, `imported` = ingested from a file/doc) plus a
+  free-text `source` (e.g. `"user chat"`, `"file:report.pdf#p3"`). Set it when
+  storing — `add_memory(text, origin="explicit", source="kickoff call")` — or later
+  with `set_provenance(id, origin, source)` (both empty clears it). Renders as
+  `«explicit · kickoff call»`.
+- **Confidence** — a coarse `low` / `medium` / `high` (deliberately **not** a float:
+  no fake precision; *you*, the agent, judge it). Set with
+  `add_memory(text, confidence="high")` or `set_confidence(id, "high")` (empty
+  clears). Renders as `(conf: high)`.
+
+Both **scope recall** and combine (AND) with `tags`/`mem_type`:
+`search_memories("auth", origin="explicit", min_confidence="medium")` returns only
+explicit, ≥medium-confidence memories about auth. `min_confidence` is a quality
+gate — memories with **no** confidence set are excluded when it is used. On
+`add_memory` an unknown `origin`/`confidence` is **ignored with a warning** (the
+memory is still stored — no data loss); the `set_*` tools reject an unknown value
+outright. Like tags/types, provenance and confidence live in the sidecar
+(`memory_meta.json`), so they survive `update_memory` and never affect
+embeddings/ranking, and the HTML viewer gains filter dropdowns + chips for both.
+
+---
+
+## Time-scoped recall (temporal filters)
+
+mem0 already stores each memory's `created_at` and `updated_at`. `search_memories`
+and `list_memories` expose them as **date filters** (`YYYY-MM-DD`, inclusive, day
+granularity) so you can ask time-bounded questions:
+
+- `search_memories(query, since="2026-06-01")` — created on/after a date.
+- `search_memories(query, until="2026-06-14")` — created on/before a date.
+- `search_memories(query, changed_since="2026-06-10")` — **last changed**
+  (updated, else created) on/after a date — memanto's `--changed-since`.
+- `list_memories(since=…, until=…)` — list within a created-date window.
+
+These are pure post-filters over the existing payload (no extra storage), so
+ranking is unaffected; they combine (AND) with the tag/type/origin/confidence
+scopes. An unparseable date is rejected with a clear message.
+
+---
+
+## Versioning & history (no silent overwrite)
+
+`update_memory` and `delete_memory` no longer lose the old text: the prior version
+is **archived to the sidecar first** (principle: never destroy without a backup),
+capped at `MEM0_HISTORY_DEPTH` entries per memory (default 5; `0` disables). A
+deleted memory's history is **kept**, so it can still be inspected and restored.
+
+- `memory_history(id)` lists the archived versions (newest first) plus the current
+  text and the operation (update/delete) that displaced each one.
+- `restore_memory(id, n)` restores version `n` (n=1 = most recent prior). If the
+  memory still exists it is updated in place (the current text is archived first, so
+  a restore is itself reversible); if it was **deleted**, the old text is re-added as
+  a **new** memory id (the original vector is gone), and its tags/type/provenance/
+  confidence are not carried over.
+
+History lives in the sidecar like every other dimension, so it never touches the
+vector store or ranking.
+
+---
+
 ## Keeping memory tidy (curation)
 
 Every search quietly records lightweight usage stats — retrieval count and
@@ -250,8 +321,42 @@ and asks the agent to merge duplicates, drop stale facts, tighten wording, and
 re-balance what deserves an always-on core slot — one tool call at a time. It also
 **flags likely-duplicate clusters** (memories whose cosine similarity ≥
 `MEM0_DUP_THRESHOLD`, computed locally over the stored embeddings — no LLM) as prime
-merge candidates. Run it periodically or whenever memory feels noisy. (Low usage
-alone is never a reason to delete: durable facts stay.)
+merge candidates, plus **conflict suspects** — pairs in the same-topic cosine band
+(`[MEM0_CONFLICT_LOW, MEM0_DUP_THRESHOLD)`) that *disagree* on a number, weekday,
+boolean/antonym, or negation (e.g. `port 5432` ↔ `port 5433`, `deploy on Friday` ↔
+`deploy on Monday`), surfaced for you to confirm and reconcile (a deterministic
+heuristic, never an LLM verdict). Run it periodically or whenever memory feels
+noisy. (Low usage alone is never a reason to delete: durable facts stay.)
+
+---
+
+## Bulk: file ingest, batch add & export
+
+- **Ingest a file → memories.** `server/ingest_file.py` extracts text, splits it
+  into **deterministic** chunks (paragraph boundaries + a size target + slight
+  overlap; no LLM, no summarization), and stores each chunk tagged with the filename
+  and marked `origin=imported`, `source=file:<name>#chunk<i>`. Plain text / Markdown
+  / CSV·TSV / JSON / logs need only the stdlib; PDF·DOCX·XLSX use optional parsers
+  isolated in `requirements-ingest.txt` (so only people who ingest those formats
+  install them). Writing needs exclusive store access, so stop the backend first
+  (same rule as the migrations) — or pass `--dry-run` to preview chunks:
+  ```bash
+  .venv/bin/python server/ingest_file.py notes.md
+  .venv/bin/python server/ingest_file.py report.pdf --target-chars 1000 --overlap 120
+  .venv/bin/python server/ingest_file.py notes.md --dry-run   # preview, write nothing
+  ```
+- **Batch add.** The `add_memories(items_json)` tool stores many memories in ONE
+  locked pass — `items_json` is a JSON array of `{text, tags?, mem_type?, origin?,
+  source?, confidence?}`. It is the bulk counterpart of `add_memory` (and what the
+  ingest CLI uses under the hood).
+- **Export everything.** `server/export_memory.py` dumps all memories to a single
+  Markdown (`MEMORY.md`-style) or JSON file — id, text, type, tags, provenance,
+  confidence, and created/updated dates. Like the viewer, it reads the store +
+  sidecar **directly** (no model, no LLM, no running backend):
+  ```bash
+  .venv/bin/python server/export_memory.py                # -> ~/.mem0-mcp/MEMORY.md
+  .venv/bin/python server/export_memory.py --format json  # -> ~/.mem0-mcp/memory-export.json
+  ```
 
 ---
 
@@ -370,6 +475,10 @@ writer even with several clients open at once.
 | `MEM0_BM25_MAX_DOCS` | `5000` | cap on lexical scan size for very large stores |
 | `MEM0_DUP_THRESHOLD` | `0.92` | cosine ≥ this flags a near-duplicate (`add_memory` warning + `curate_memories` clusters); tuned for the default embedder, retune if you swap it |
 | `MEM0_DUP_MAX_DOCS` | `2000` | skip the O(n²) duplicate scan in `curate_memories` above this many memories |
+| `MEM0_HISTORY_DEPTH` | `5` | archived prior versions kept per memory (`update_memory`/`delete_memory`); `0` disables history |
+| `MEM0_CONFLICT_LOW` | `0.80` | lower bound of the conflict-suspect cosine band (upper bound is `MEM0_DUP_THRESHOLD`) |
+| `MEM0_RECENCY_BIAS` | `0` | opt-in recency tie-break weight over the fused ranking; `0` = off (a value `<1` only breaks near-ties; measure before raising) |
+| `MEM0_CONFIDENCE_BIAS` | `0` | opt-in confidence tie-break weight; `0` = off |
 | `MEM0_MCP_PORT` | `8765` | backend HTTP port (must match the proxy) |
 
 **Proxy** (`server/mem0_proxy.py`; set via the `env` block of your MCP config):
@@ -433,16 +542,18 @@ of `requirements.txt`):
 .venv/bin/ruff check server tests    # lint (pyflakes + correctness rules)
 ```
 
-The unit tests (`tests/test_retrieval.py`, `test_store.py`, `test_viewer.py`) need
-no model and run in milliseconds; the integration tests (`test_integration.py`)
-exercise the real server on a throwaway store and **skip automatically** when the
-runtime deps aren't installed. GitHub Actions (`.github/workflows/ci.yml`) runs
-ruff + pytest on Python 3.10–3.13.
+The unit tests (`tests/test_retrieval.py`, `test_store.py`, `test_viewer.py`,
+`test_export.py`, `test_ingest.py`) need no model and run in milliseconds; the
+integration tests (`test_integration.py`) exercise the real server on a throwaway
+store and **skip automatically** when the runtime deps aren't installed. GitHub
+Actions (`.github/workflows/ci.yml`) runs ruff + pytest on Python 3.10–3.13.
 
 **Dependencies.** `mem0ai` is pinned exactly (`==2.0.4`) because the server relies
 on specific mem0 2.0.4 internals; the rest use compatible ranges capped below the
 next major (`fastmcp`, `chromadb`, `sentence-transformers`). When you bump any
-dependency, re-run the test suite and `server/eval_recall.py` first.
+dependency, re-run the test suite and `server/eval_recall.py` first. The optional
+file-ingest parsers (PDF/DOCX/XLSX) live separately in `requirements-ingest.txt` and
+are **never** required at runtime — install them only to ingest those formats.
 
 ---
 

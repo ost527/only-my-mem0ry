@@ -99,13 +99,18 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 
 | 툴 | 하는 일 |
 |------|--------------|
-| `add_memory(text, user_id?, tags?, mem_type?)` | 사실을 그대로 저장. 선택적 `tags`(예: 프로젝트명)로 이후 검색 범위를 좁힘; 선택적 `mem_type`으로 의미 **유형** 하나를 지정([메모리 유형](#메모리-유형-타입형-시맨틱-메모리) 참고). 조정(reconcile)용으로 가장 가까운 기존 메모리를 함께 반환. |
-| `update_memory(id, text)` | 기존 메모리를 교체/병합(중복 방지). |
-| `delete_memory(id)` | 오래되었거나 모순되는 메모리 제거. |
-| `search_memories(query, user_id?, tags?, mem_type?)` | 시맨틱 검색; 선택적 `tags`(하나라도 일치)와/또는 `mem_type`으로 범위를 좁힘(두 필터는 AND로 결합). 메모리를 **ID와 함께** 반환(📌 고정, `[type]`, `#tags` 표시). |
+| `add_memory(text, user_id?, tags?, mem_type?, origin?, source?, confidence?)` | 사실을 그대로 저장. 선택적 `tags`(예: 프로젝트명)로 이후 검색 범위를 좁힘; `mem_type`으로 의미 **유형** 하나 지정; `origin`/`source`로 [출처(provenance)](#출처--신뢰도-어디서-왔고-얼마나-확실한가) 기록; `confidence`(`low`/`medium`/`high`)로 확신 정도 기록. 조정(reconcile)용으로 가장 가까운 기존 메모리를 함께 반환. |
+| `add_memories(items_json, user_id?)` | **배치**로 여러 메모리를 락 한 번에 저장 — `items_json`은 `{text, tags?, mem_type?, origin?, source?, confidence?}` 객체의 JSON 배열. |
+| `update_memory(id, text)` | 기존 메모리를 교체/병합(중복 방지). 직전 본문은 먼저 [히스토리](#버전-관리--히스토리-조용한-덮어쓰기-없음)에 보관. |
+| `delete_memory(id)` | 오래되었거나 모순되는 메모리 제거(직전 본문은 히스토리에 보관). |
+| `search_memories(query, user_id?, tags?, mem_type?, origin?, min_confidence?, since?, until?, changed_since?)` | 시맨틱 검색 + 선택적 후처리 필터(모두 **AND 결합**): `tags`(하나라도 일치), `mem_type`, `origin`, `min_confidence`, 그리고 날짜 범위(`since`/`until`는 생성일, `changed_since`는 수정일 기준). 메모리를 **ID와 함께** 반환(📌 고정, `[type]`, «provenance», `(conf: …)`, `#tags` 표시). |
 | `tag_memory(id, tags)` | 메모리의 태그를 설정/교체(빈 문자열이면 제거). 태그는 사이드카에 살아 `update_memory` 후에도 유지. |
-| `set_memory_type(id, mem_type)` | 메모리의 의미 **유형**을 설정/교체 — 13개 범주 중 하나(빈 문자열이면 제거). 사이드카에 살아 `update_memory` 후에도 유지. |
-| `list_memories(user_id?)` | 저장된 모든 것을 나열(ID 포함; 📌 고정, `[type]`, `#tags` 표시). |
+| `set_memory_type(id, mem_type)` | 메모리의 의미 **유형**을 설정/교체 — 13개 범주 중 하나(빈 문자열이면 제거). |
+| `set_provenance(id, origin?, source?)` | 메모리의 **출처**를 설정/교체 — `origin` ∈ explicit/inferred/imported + 자유 텍스트 `source`(둘 다 비우면 제거). |
+| `set_confidence(id, confidence?)` | 메모리의 **신뢰도**를 설정/교체 — `low`/`medium`/`high`(빈 문자열이면 제거). |
+| `memory_history(id)` | 메모리의 보관된 이전 버전(최신순)과 현재 본문을 표시. |
+| `restore_memory(id, n?)` | 이전 버전 `n`을 복원(n=1 = 가장 최근); 삭제된 메모리면 NEW id로 재추가. |
+| `list_memories(user_id?, since?, until?)` | 저장된 모든 것을 나열(선택적으로 생성일 범위 안에서); ID + 📌/`[type]`/«provenance»/`(conf:…)`/`#tags` 표시. |
 | `pin_memory(id)` | 메모리를 상시 **코어**로 고정(룰 파일이 매 세션 로드하는 파일로 미러링). `MEM0_CORE_BUDGET`로 제한. |
 | `unpin_memory(id)` | 코어에서 해제; 메모리는 그대로 저장·검색됨. |
 
@@ -233,6 +238,66 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 
 ---
 
+## 출처 & 신뢰도 (어디서 왔고, 얼마나 확실한가)
+
+사이드카에 두 차원을 더해, 메모리가 *얼마나 믿을 만한지*와 *어디서 왔는지*를 에이전트가
+기록할 수 있습니다([memanto](https://github.com/moorcheh-ai/memanto)에서 착안):
+
+- **출처(provenance)** — `origin`(고정 어휘: `explicit` = 사용자가 직접 말함,
+  `inferred` = 에이전트가 추론함, `imported` = 파일/문서에서 인입) + 자유 텍스트
+  `source`(예: `"user chat"`, `"file:report.pdf#p3"`). 저장 시 지정 —
+  `add_memory(text, origin="explicit", source="kickoff call")` — 또는 나중에
+  `set_provenance(id, origin, source)`(둘 다 비우면 제거). `«explicit · kickoff call»`로 표시.
+- **신뢰도(confidence)** — 거친 `low` / `medium` / `high`(일부러 실수(float)가 **아님**:
+  가짜 정밀도 없이 *에이전트*가 판단). `add_memory(text, confidence="high")` 또는
+  `set_confidence(id, "high")`(빈 문자열이면 제거)로 설정. `(conf: high)`로 표시.
+
+둘 다 **회상 범위를 좁히며** `tags`/`mem_type`과 결합(AND)됩니다:
+`search_memories("auth", origin="explicit", min_confidence="medium")`는 explicit이고
+신뢰도 ≥medium인 auth 메모리만 반환합니다. `min_confidence`는 품질 게이트라서 — 신뢰도가
+**설정되지 않은** 메모리는 이 필터를 쓰면 제외됩니다. `add_memory`에서 알 수 없는
+`origin`/`confidence`는 **경고와 함께 무시**되며 메모리는 그대로 저장됩니다(데이터 손실
+없음); `set_*` 툴은 알 수 없는 값을 단호히 거부합니다. 태그/유형처럼 출처·신뢰도도
+사이드카(`memory_meta.json`)에 살아 `update_memory` 후에도 유지되고 임베딩/랭킹에 영향을
+주지 않으며, HTML 뷰어에 둘 다 필터 드롭다운 + 칩이 생깁니다.
+
+---
+
+## 시간 기반 회상 (temporal 필터)
+
+mem0는 이미 각 메모리의 `created_at`과 `updated_at`을 저장합니다. `search_memories`와
+`list_memories`는 이를 **날짜 필터**(`YYYY-MM-DD`, 포함, 일 단위)로 노출해 시간을 한정한
+질문을 할 수 있습니다:
+
+- `search_memories(query, since="2026-06-01")` — 이 날짜 이후(포함) 생성.
+- `search_memories(query, until="2026-06-14")` — 이 날짜 이전(포함) 생성.
+- `search_memories(query, changed_since="2026-06-10")` — **마지막 변경**(수정, 없으면
+  생성)이 이 날짜 이후(포함) — memanto의 `--changed-since`.
+- `list_memories(since=…, until=…)` — 생성일 범위 안에서 나열.
+
+기존 payload 위의 순수 후처리이므로(추가 저장 없음) 랭킹은 영향받지 않고,
+태그/유형/출처/신뢰도 범위와 결합(AND)됩니다. 파싱할 수 없는 날짜는 명확한 메시지로 거부됩니다.
+
+---
+
+## 버전 관리 & 히스토리 (조용한 덮어쓰기 없음)
+
+`update_memory`와 `delete_memory`는 더 이상 옛 본문을 잃지 않습니다: 직전 버전을 **먼저
+사이드카에 보관**한 뒤(원칙: 백업 없이 파괴하지 않는다) 동작하며, 메모리당
+`MEM0_HISTORY_DEPTH`개(기본 5; `0`이면 비활성화)로 상한이 있습니다. 삭제된 메모리의
+히스토리도 **유지**되므로 조회·복원할 수 있습니다.
+
+- `memory_history(id)`는 보관된 버전(최신순)과 현재 본문, 그리고 각 버전을 밀어낸
+  동작(update/delete)을 나열합니다.
+- `restore_memory(id, n)`는 버전 `n`을 복원합니다(n=1 = 가장 최근 직전 버전). 메모리가
+  아직 있으면 제자리 업데이트(현재 본문을 먼저 보관하므로 복원도 되돌릴 수 있음); **삭제된**
+  경우 옛 본문을 **새** 메모리 id로 재추가합니다(원래 벡터는 사라짐), 이때 태그/유형/출처/
+  신뢰도는 이어지지 않습니다.
+
+히스토리도 다른 모든 차원처럼 사이드카에 살아 벡터 스토어나 랭킹을 건드리지 않습니다.
+
+---
+
 ## 메모리 정리(큐레이션)
 
 검색할 때마다 메모리별 가벼운 사용 통계(검색된 횟수 + 마지막 사용일)가 조용히
@@ -240,8 +305,39 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 (📌 고정, 생성일, 사용량)를 펼쳐 놓고, 중복 병합·오래된 사실 삭제·문구 다듬기·상시
 코어 슬롯 재조정을 에이전트가 한 번에 하나씩 수행하도록 합니다. 또한 **중복 의심 클러스터**
 (저장된 임베딩으로 로컬 계산한 코사인 유사도 ≥ `MEM0_DUP_THRESHOLD`인 묶음 — LLM 없음)를
-우선 병합 후보로 띄워줍니다. 주기적으로, 또는 메모리가 어수선하다 싶을 때 실행하세요.
-(사용량이 적다는 것만으로는 삭제 이유가 되지 않습니다: 여전히 참인 영속적 사실은 유지합니다.)
+우선 병합 후보로 띄워주고, **충돌 의심**도 함께 표시합니다 — 같은 주제 코사인 대역
+(`[MEM0_CONFLICT_LOW, MEM0_DUP_THRESHOLD)`) 안에 있으면서 숫자·요일·불리언/반의어·부정에서
+*어긋나는* 쌍(예: `port 5432` ↔ `port 5433`, `deploy on Friday` ↔ `deploy on Monday`)을
+확인·조정하도록 띄워줍니다(결정적 휴리스틱일 뿐, LLM 판정이 아님). 주기적으로, 또는 메모리가
+어수선하다 싶을 때 실행하세요. (사용량이 적다는 것만으로는 삭제 이유가 되지 않습니다: 여전히
+참인 영속적 사실은 유지합니다.)
+
+---
+
+## 대량 처리: 파일 인제스트 · 배치 추가 · 내보내기
+
+- **파일 → 메모리 인제스트.** `server/ingest_file.py`는 텍스트를 추출해 **결정적**
+  청크(단락 경계 + 크기 목표 + 약간의 overlap; LLM 없음, 요약 없음)로 나누고, 각 청크를
+  파일명 태그와 `origin=imported`, `source=file:<name>#chunk<i>`로 저장합니다. 일반 텍스트
+  / Markdown / CSV·TSV / JSON / 로그는 표준 라이브러리만으로 처리하고, PDF·DOCX·XLSX는
+  `requirements-ingest.txt`에 격리된 선택적 파서를 씁니다(해당 포맷을 인제스트하는 사람만
+  설치). 쓰기는 저장소 독점 접근이 필요하므로 백엔드를 먼저 멈추거나(마이그레이션과 동일
+  규칙) `--dry-run`으로 청크를 미리 볼 수 있습니다:
+  ```bash
+  .venv/bin/python server/ingest_file.py notes.md
+  .venv/bin/python server/ingest_file.py report.pdf --target-chars 1000 --overlap 120
+  .venv/bin/python server/ingest_file.py notes.md --dry-run   # 미리보기, 쓰지 않음
+  ```
+- **배치 추가.** `add_memories(items_json)` 툴은 여러 메모리를 락 한 번에 저장합니다 —
+  `items_json`은 `{text, tags?, mem_type?, origin?, source?, confidence?}` 객체의 JSON
+  배열. `add_memory`의 대량 버전이며(인제스트 CLI도 내부에서 이것을 씁니다).
+- **전체 내보내기.** `server/export_memory.py`는 모든 메모리를 하나의 Markdown
+  (`MEMORY.md` 형식) 또는 JSON 파일로 덤프합니다 — id·본문·유형·태그·출처·신뢰도·생성/수정일.
+  뷰어처럼 스토어 + 사이드카를 **직접** 읽습니다(모델·LLM·실행 중 백엔드 불필요):
+  ```bash
+  .venv/bin/python server/export_memory.py                # -> ~/.mem0-mcp/MEMORY.md
+  .venv/bin/python server/export_memory.py --format json  # -> ~/.mem0-mcp/memory-export.json
+  ```
 
 ---
 
@@ -353,6 +449,10 @@ Chroma writer는 정확히 하나뿐입니다.
 | `MEM0_BM25_MAX_DOCS` | `5000` | 매우 큰 스토어에서 렉시컬 스캔 크기 상한 |
 | `MEM0_DUP_THRESHOLD` | `0.92` | 코사인 ≥ 이 값이면 근접 중복으로 표시(`add_memory` 경고 + `curate_memories` 클러스터); 기본 임베더에 맞춰 튜닝, 모델 교체 시 재튜닝 |
 | `MEM0_DUP_MAX_DOCS` | `2000` | `curate_memories`의 O(n²) 중복 스캔을 이 개수 초과 시 건너뜀 |
+| `MEM0_HISTORY_DEPTH` | `5` | 메모리당 보관하는 이전 버전 수(`update_memory`/`delete_memory`); `0`이면 히스토리 비활성화 |
+| `MEM0_CONFLICT_LOW` | `0.80` | 충돌 의심 코사인 대역의 하한(상한은 `MEM0_DUP_THRESHOLD`) |
+| `MEM0_RECENCY_BIAS` | `0` | 융합 랭킹 위의 선택적 최근성 동점 처리 가중치; `0`=끔(값 `<1`은 근접 동점만 깸; 올리기 전 측정) |
+| `MEM0_CONFIDENCE_BIAS` | `0` | 선택적 신뢰도 동점 처리 가중치; `0`=끔 |
 | `MEM0_MCP_PORT` | `8765` | 백엔드 HTTP 포트(proxy와 일치해야 함) |
 
 **프록시** (`server/mem0_proxy.py`; MCP config의 `env` 블록으로 설정):
@@ -411,15 +511,18 @@ Chroma writer는 정확히 하나뿐입니다.
 .venv/bin/ruff check server tests    # 린트(pyflakes + 정확성 규칙)
 ```
 
-단위 테스트(`tests/test_retrieval.py`, `test_store.py`, `test_viewer.py`)는 모델이
-필요 없어 수 밀리초 만에 끝나고, 통합 테스트(`test_integration.py`)는 일회용 스토어에서
-실제 서버를 돌리며 런타임 의존성이 없으면 **자동으로 건너뜁니다**. GitHub Actions
-(`.github/workflows/ci.yml`)가 Python 3.10–3.13에서 ruff + pytest를 실행합니다.
+단위 테스트(`tests/test_retrieval.py`, `test_store.py`, `test_viewer.py`,
+`test_export.py`, `test_ingest.py`)는 모델이 필요 없어 수 밀리초 만에 끝나고, 통합 테스트
+(`test_integration.py`)는 일회용 스토어에서 실제 서버를 돌리며 런타임 의존성이 없으면
+**자동으로 건너뜁니다**. GitHub Actions(`.github/workflows/ci.yml`)가 Python 3.10–3.13에서
+ruff + pytest를 실행합니다.
 
 **의존성.** `mem0ai`는 서버가 mem0 2.0.4 내부 동작에 의존하므로 정확히 고정
 (`==2.0.4`)하고, 나머지(`fastmcp`, `chromadb`, `sentence-transformers`)는 다음 메이저
 미만으로 상한을 둔 호환 범위를 씁니다. 의존성을 올릴 때는 먼저 테스트 스위트와
-`server/eval_recall.py`를 다시 실행하세요.
+`server/eval_recall.py`를 다시 실행하세요. 선택적 파일-인제스트 파서(PDF/DOCX/XLSX)는
+`requirements-ingest.txt`에 따로 두며 런타임에는 **절대** 필요하지 않습니다 — 해당 포맷을
+인제스트할 때만 설치하세요.
 
 ---
 

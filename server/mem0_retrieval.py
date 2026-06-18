@@ -129,3 +129,84 @@ def cluster_by_pairs(pairs):
     clusters = [sorted(g) for g in groups.values() if len(g) >= 2]
     clusters.sort(key=lambda g: (-len(g), g[0]))
     return clusters
+
+
+def rerank_with_bias(results: list, bias_by_id: dict, weight: float):
+    """Optional, OFF-by-default tie-break re-rank. `results` is the current ranked
+    list ([{id, ...}]); `bias_by_id` maps id -> a score in [0, 1] (e.g. recency or
+    confidence). Each item gets `(n - position) + weight*bias`, then a STABLE sort
+    by that score re-orders. Because adjacent rank scores differ by exactly 1, a
+    weight < 1 can only break (near-)ties -- it never reorders a clear ranking, so
+    it is provably non-regressing; weight >= 1 can reorder (measure first). weight
+    == 0 (the default everywhere) is a no-op. Pure + deterministic."""
+    if not weight or not results:
+        return results
+    n = len(results)
+    decorated = []
+    for pos, r in enumerate(results):
+        bias = bias_by_id.get(r.get("id"), 0.0) or 0.0
+        decorated.append(((n - pos) + weight * bias, pos, r))
+    decorated.sort(key=lambda t: (-t[0], t[1]))
+    return [r for _, _, r in decorated]
+
+
+# ---- conflict-candidate heuristic (pure, deterministic, NO LLM) --------------
+# A real semantic contradiction can't be decided without an LLM. Instead we flag
+# *candidates*: two memories that are MOSTLY about the same thing (high overlap of
+# non-discriminator tokens) yet DISAGREE on a discriminator -- a number, a weekday,
+# a boolean/antonym, or a negation. The CLIENT (the brain) confirms or dismisses,
+# exactly like the duplicate clusters. The cosine "same topic" band is computed by
+# the server (it has the vectors); this function applies the lexical disagreement
+# test to a candidate pair's texts.
+_NEGATIONS = frozenset({
+    "not", "no", "never", "none", "without", "cannot", "cant", "dont",
+    "doesnt", "isnt", "arent", "wont", "wasnt", "disabled",
+})
+_ANTONYMS = (
+    frozenset({"enabled", "disabled"}), frozenset({"enable", "disable"}),
+    frozenset({"true", "false"}), frozenset({"on", "off"}),
+    frozenset({"yes", "no"}), frozenset({"allow", "deny"}),
+    frozenset({"allowed", "denied"}), frozenset({"up", "down"}),
+    frozenset({"active", "inactive"}), frozenset({"present", "absent"}),
+    frozenset({"success", "failure"}), frozenset({"pass", "fail"}),
+    frozenset({"open", "closed"}), frozenset({"before", "after"}),
+)
+_ANTONYM_MEMBERS = frozenset().union(*_ANTONYMS)
+_DAYS = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+})
+
+
+def is_conflict_pair(text_a: str, text_b: str, min_overlap: float = 0.5) -> bool:
+    """True if two memories look like a CONFLICT candidate: they share most of
+    their content tokens (subject overlap >= min_overlap) but disagree on a
+    discriminator -- differing numbers, differing weekdays, an antonym flip
+    (enabled/disabled), or a negation asymmetry ("is set" vs "is not set").
+    Identical or merely-similar texts return False (no disagreement). Pure +
+    deterministic; intended to be applied only to pairs already in the cosine
+    "same topic" band so it stays cheap and precise."""
+    ta, tb = tokenize(text_a), tokenize(text_b)
+    if not ta or not tb:
+        return False
+    sa, sb = set(ta), set(tb)
+    nums_a = {t for t in sa if t.isdigit()}
+    nums_b = {t for t in sb if t.isdigit()}
+    days_a, days_b = sa & _DAYS, sb & _DAYS
+    negs_a, negs_b = sa & _NEGATIONS, sb & _NEGATIONS
+    disc_a = nums_a | days_a | negs_a | (sa & _ANTONYM_MEMBERS)
+    disc_b = nums_b | days_b | negs_b | (sb & _ANTONYM_MEMBERS)
+    content_a, content_b = sa - disc_a, sb - disc_b
+    shared, union = content_a & content_b, content_a | content_b
+    if not shared or not union or len(shared) / len(union) < min_overlap:
+        return False
+    if nums_a and nums_b and nums_a != nums_b:
+        return True
+    if days_a and days_b and days_a != days_b:
+        return True
+    if bool(negs_a) != bool(negs_b):
+        return True
+    for group in _ANTONYMS:
+        ga, gb = group & sa, group & sb
+        if ga and gb and ga != gb:
+            return True
+    return False

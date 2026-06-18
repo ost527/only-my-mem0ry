@@ -40,6 +40,7 @@ Env vars (all optional):
 """
 import os
 import time
+import json
 import fcntl
 import signal
 import asyncio
@@ -62,8 +63,17 @@ from mem0_store import (
     normalize_tags,
     normalize_type,
     MEMORY_TYPES,
+    normalize_origin,
+    PROVENANCE_ORIGINS,
+    normalize_confidence,
+    CONFIDENCE_LEVELS,
+    CONFIDENCE_RANK,
+    parse_date,
+    date_of,
 )
-from mem0_retrieval import bm25_rank, rrf_merge, fuse_rescue, cluster_by_pairs
+from mem0_retrieval import (
+    bm25_rank, rrf_merge, fuse_rescue, cluster_by_pairs, rerank_with_bias, is_conflict_pair,
+)
 
 logger = logging.getLogger("mem0-mcp")
 
@@ -246,6 +256,25 @@ _DUP_THRESHOLD = float(os.environ.get("MEM0_DUP_THRESHOLD", "0.92"))
 # Skip the O(n^2) duplicate scan above this many memories (curate_memories only).
 _DUP_MAX_DOCS = int(os.environ.get("MEM0_DUP_MAX_DOCS", "2000"))
 
+# Versioning (no silent overwrite): update_memory / delete_memory archive the prior
+# text to the sidecar `history` map before mutating, so a change is never lost.
+# Capped at this many entries per memory to keep the sidecar small; 0 disables.
+_HISTORY_DEPTH = int(os.environ.get("MEM0_HISTORY_DEPTH", "5"))
+
+# Conflict-candidate detection (curate_memories): two memories whose cosine sim is
+# in the "same topic" band [LOW, DUP_THRESHOLD) AND that disagree on a discriminator
+# (number/weekday/boolean/negation) are flagged for the client to confirm. The
+# upper bound is _DUP_THRESHOLD (>= that is a duplicate, not a conflict).
+_CONFLICT_LOW = float(os.environ.get("MEM0_CONFLICT_LOW", "0.80"))
+
+# Opt-in ranking tie-breaks (BOTH default 0 = OFF, so ranking is byte-identical to
+# before and eval_recall is non-regressing by construction). When > 0 they add a
+# small recency / confidence nudge over the fused ranking; a weight < 1 only breaks
+# near-ties (see rerank_with_bias). Turn on and MEASURE with server/eval_recall.py
+# before trusting a value > 0.
+_RECENCY_BIAS = float(os.environ.get("MEM0_RECENCY_BIAS", "0"))
+_CONFIDENCE_BIAS = float(os.environ.get("MEM0_CONFIDENCE_BIAS", "0"))
+
 
 # Serialize ALL store access (reads AND writes) across every client. FastMCP runs
 # these sync tools in a worker threadpool (run_in_thread=True), so two tool calls
@@ -321,23 +350,67 @@ def _semantic_search(query: str, uid: str, limit: int):
     The tokenizer/BM25/fusion primitives are in mem0_retrieval (pure, unit-tested).
     Fusion is `rescue` by default (non-regressing) or `rrf` (aggressive) via
     MEM0_FUSION. Falls back to dense-only if the lexical path fails or hybrid is
-    disabled (MEM0_HYBRID_SEARCH=0). Returns [{id, memory, score}]."""
+    disabled (MEM0_HYBRID_SEARCH=0). An OPT-IN recency/confidence tie-break may
+    re-order the final list (OFF by default; see _apply_optional_bias). Returns
+    [{id, memory, score}]."""
     limit = max(limit, 1)
     # Pull more candidates than `limit` from each signal so fusion has room to work.
     cand = max(limit * 4, 20)
     dense = _dense_search(query, uid, cand)
     if not _HYBRID:
-        return dense[:limit]
+        return _apply_optional_bias(dense[:limit], uid)
     try:
         corpus = _get_all(uid)
         lexical = bm25_rank(query, corpus, cand, k1=_BM25_K1, b=_BM25_B, max_docs=_BM25_MAX_DOCS)
     except Exception:
-        return dense[:limit]
+        return _apply_optional_bias(dense[:limit], uid)
     if not lexical:
-        return dense[:limit]
+        return _apply_optional_bias(dense[:limit], uid)
     if _FUSION == "rrf":
-        return rrf_merge([dense, lexical], limit, _RRF_K)
-    return fuse_rescue(dense, lexical, limit)
+        fused = rrf_merge([dense, lexical], limit, _RRF_K)
+    else:
+        fused = fuse_rescue(dense, lexical, limit)
+    return _apply_optional_bias(fused, uid)
+
+
+def _time_index(uid: str) -> dict:
+    """{id: (created_at, updated_at)} for every memory of uid, from the store.
+    created_at/updated_at already live in the Chroma payload (no extra storage)."""
+    idx = {}
+    for r in _get_all(uid):
+        mid = r.get("id")
+        if mid:
+            idx[mid] = (r.get("created_at") or "", r.get("updated_at") or "")
+    return idx
+
+
+def _recency_norm(ids: list, tindex: dict) -> dict:
+    """Map each id -> recency score in [0, 1] (newest = 1.0) by ORDINAL rank of its
+    effective timestamp (max of created/updated). Ordinal (not raw delta) so a
+    single old/new outlier can't dominate -- it stays a gentle tie-break."""
+    eff = {mid: max(tindex.get(mid, ("", ""))) for mid in ids}
+    ordered = sorted(set(ids), key=lambda i: eff.get(i, ""))
+    k = len(ordered)
+    if k <= 1:
+        return {i: 1.0 for i in ids}
+    return {mid: pos / (k - 1) for pos, mid in enumerate(ordered)}
+
+
+def _apply_optional_bias(results: list, uid: str):
+    """Apply the OPT-IN recency / confidence tie-break to a ranked result list.
+    No-op (returns the input unchanged) unless MEM0_RECENCY_BIAS / MEM0_CONFIDENCE_BIAS
+    is > 0, so the default ranking -- and server/eval_recall.py -- is unaffected."""
+    if len(results) < 2 or (_RECENCY_BIAS <= 0 and _CONFIDENCE_BIAS <= 0):
+        return results
+    ids = [r.get("id") for r in results]
+    out = results
+    if _RECENCY_BIAS > 0:
+        out = rerank_with_bias(out, _recency_norm(ids, _time_index(uid)), _RECENCY_BIAS)
+    if _CONFIDENCE_BIAS > 0:
+        conf = _load_meta().get("confidence", {})
+        cnorm = {mid: CONFIDENCE_RANK.get(conf.get(mid), 0) / 3.0 for mid in ids}
+        out = rerank_with_bias(out, cnorm, _CONFIDENCE_BIAS)
+    return out
 
 
 def _duplicate_clusters(uid: str, threshold: float, max_docs: int):
@@ -376,6 +449,53 @@ def _duplicate_clusters(uid: str, threshold: float, max_docs: int):
              if sims[i, j] >= threshold]
     return [[{"id": cid, "memory": text_by_id.get(cid, "")} for cid in cl]
             for cl in cluster_by_pairs(pairs)]
+
+
+def _conflict_candidates(uid: str, low: float, high: float, max_docs: int):
+    """Conflict CANDIDATES (the client confirms; we never declare a contradiction
+    on our own). Memory pairs whose cosine sim is in the "same topic" band
+    [low, high) AND that disagree on a discriminator (number / weekday / boolean /
+    negation, via is_conflict_pair). Pure vector math for the band (reuses the
+    stored embeddings; NO LLM, no new model call), then the lexical disagreement
+    test. Returns [{"a": {id, memory}, "b": {id, memory}, "sim": float}, ...] sorted
+    by descending sim. Best-effort: [] on any error or above max_docs (this O(n^2)
+    scan is for the occasional curation pass, not the hot path)."""
+    try:
+        import numpy as np
+        data = m.vector_store.collection.get(include=["embeddings", "metadatas"])
+    except Exception as e:
+        logger.debug("conflict-candidate scan skipped: %s", e)
+        return []
+    ids_all = data.get("ids") or []
+    embs_all = data.get("embeddings")
+    metas_all = data.get("metadatas") or []
+    if embs_all is None or len(ids_all) < 2:
+        return []
+    sel = [k for k in range(len(ids_all)) if (metas_all[k] or {}).get("user_id") == uid]
+    if len(sel) < 2 or len(sel) > max_docs:
+        return []
+    ids = [ids_all[k] for k in sel]
+    text_by_id = {ids_all[k]: (metas_all[k] or {}).get("data", "") for k in sel}
+    try:
+        V = np.asarray([embs_all[k] for k in sel], dtype=float)
+        norms = np.linalg.norm(V, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        V = V / norms
+        sims = V @ V.T
+    except Exception as e:
+        logger.debug("conflict-candidate math skipped: %s", e)
+        return []
+    n = len(ids)
+    out = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            s = float(sims[i, j])
+            if low <= s < high and is_conflict_pair(text_by_id[ids[i]], text_by_id[ids[j]]):
+                out.append({"a": {"id": ids[i], "memory": text_by_id[ids[i]]},
+                            "b": {"id": ids[j], "memory": text_by_id[ids[j]]},
+                            "sim": s})
+    out.sort(key=lambda d: -d["sim"])
+    return out
 
 
 # ---- core memory (pinned, bounded, always-on) + usage stats -------------------
@@ -446,6 +566,62 @@ def _fmt_type(typemap: dict, mid) -> str:
     return f" [{t}]" if t else ""
 
 
+def _fmt_provenance(provmap: dict, mid) -> str:
+    """Trailing ' «origin · source»' label for a memory's provenance, or '' if none."""
+    p = provmap.get(mid) or {}
+    origin, src = p.get("origin", ""), p.get("source", "")
+    if origin and src:
+        return f" «{origin} · {src}»"
+    if origin:
+        return f" «{origin}»"
+    if src:
+        return f" «↤ {src}»"
+    return ""
+
+
+def _fmt_confidence(confmap: dict, mid) -> str:
+    """Trailing ' (conf: high)' label for a memory's confidence, or '' if unset."""
+    c = confmap.get(mid)
+    return f" (conf: {c})" if c else ""
+
+
+def _apply_meta(meta: dict, mid: str, tags, mtype, origin, source, conf) -> None:
+    """Write the sidecar maps for a freshly added memory id (no save -- the caller
+    persists once). Shared by add_memory and the batch add path so they stay
+    consistent. Only sets keys that have a value."""
+    if tags:
+        meta["tags"][mid] = tags
+    if mtype:
+        meta["types"][mid] = mtype
+    if origin or source:
+        meta["provenance"][mid] = {"origin": origin, "source": source}
+    if conf:
+        meta["confidence"][mid] = conf
+
+
+def _archive_version(meta: dict, mid: str, op: str) -> None:
+    """Append the CURRENT text of `mid` to the sidecar history before it is changed
+    or deleted (principle: never destroy without a backup), capped at
+    MEM0_HISTORY_DEPTH entries. Captures user_id too so a deleted memory can be
+    re-added under its original owner. No-op when history is disabled (depth <= 0)
+    or the text can't be read. Mutates `meta`; the caller persists."""
+    if _HISTORY_DEPTH <= 0:
+        return
+    try:
+        rec = m.vector_store.get(mid)
+        payload = getattr(rec, "payload", None) or {}
+    except Exception:
+        payload = {}
+    text = payload.get("data")
+    if text is None:
+        return
+    entry = {"text": text, "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "op": op,
+             "user_id": payload.get("user_id") or ""}
+    hist = meta["history"].get(mid) or []
+    hist.append(entry)
+    meta["history"][mid] = hist[-_HISTORY_DEPTH:]
+
+
 def _memory_text(memory_id: str):
     """Text of one memory straight from the vector store (any user_id), or None
     if the id no longer exists."""
@@ -482,7 +658,8 @@ def _sync_core_file(items: list) -> None:
 
 
 @mcp.tool()
-def add_memory(text: str, user_id: str = "", tags: str = "", mem_type: str = "") -> str:
+def add_memory(text: str, user_id: str = "", tags: str = "", mem_type: str = "",
+               origin: str = "", source: str = "", confidence: str = "") -> str:
     """Store a memory. Call this THE MOMENT a durable, reusable fact appears --
     a decision, preference, config value, path/identifier, environment quirk, or
     recurring command -- not only at the end of a task. Never store secrets
@@ -502,7 +679,13 @@ def add_memory(text: str, user_id: str = "", tags: str = "", mem_type: str = "")
     relationship, context, event, learning, observation, artifact, error -- so you
     can later scope recall by kind (search_memories(mem_type=...)). An unrecognized
     mem_type is ignored with a warning (the memory is still stored); you can set it
-    later with set_memory_type."""
+    later with set_memory_type. Optionally record provenance: `origin` (one of
+    explicit, inferred, imported -- WHERE this fact came from) and a free-text
+    `source` (e.g. "user chat", "file:report.pdf"); an unrecognized origin is
+    ignored with a warning (the memory is still stored). Optionally pass
+    `confidence` (low, medium, high -- HOW sure you are) so recall can be quality-
+    gated with search_memories(min_confidence=...); an unrecognized value is
+    ignored with a warning."""
     uid = user_id or DEFAULT_USER
     norm_type = normalize_type(mem_type)
     type_warning = None
@@ -511,6 +694,19 @@ def add_memory(text: str, user_id: str = "", tags: str = "", mem_type: str = "")
                         f"{', '.join(MEMORY_TYPES)}. Stored WITHOUT a type — set "
                         f"one later with set_memory_type(id, type).")
         norm_type = ""
+    norm_origin = normalize_origin(origin)
+    origin_warning = None
+    if norm_origin is None:                   # non-empty but not a recognized origin
+        origin_warning = (f"⚠️ Ignored unknown origin '{origin}'. Valid origins: "
+                          f"{', '.join(PROVENANCE_ORIGINS)}. Stored WITHOUT an origin.")
+        norm_origin = ""
+    norm_conf = normalize_confidence(confidence)
+    conf_warning = None
+    if norm_conf is None:                     # non-empty but not a recognized level
+        conf_warning = (f"⚠️ Ignored unknown confidence '{confidence}'. Valid: "
+                        f"{', '.join(CONFIDENCE_LEVELS)}. Stored WITHOUT a confidence.")
+        norm_conf = ""
+    source = (source or "").strip()
     try:
         with _store_lock:
             # Dense nearest EXISTING memories (computed BEFORE the add) so we can
@@ -519,12 +715,9 @@ def add_memory(text: str, user_id: str = "", tags: str = "", mem_type: str = "")
             added = _results(m.add(text, user_id=uid, infer=False))
             new_id = added[0].get("id", "N/A") if added else "N/A"
             norm = normalize_tags(tags)
-            if (norm or norm_type) and new_id != "N/A":
+            if (norm or norm_type or norm_origin or source or norm_conf) and new_id != "N/A":
                 meta = _load_meta()
-                if norm:
-                    meta["tags"][new_id] = norm
-                if norm_type:
-                    meta["types"][new_id] = norm_type
+                _apply_meta(meta, new_id, norm, norm_type, norm_origin, source, norm_conf)
                 _save_meta(meta)
 
         def _sim(r):
@@ -532,10 +725,20 @@ def add_memory(text: str, user_id: str = "", tags: str = "", mem_type: str = "")
             return None if s is None else 1.0 - s  # cosine distance -> similarity
 
         typestr = f" [{norm_type}]" if norm_type else ""
+        if norm_origin and source:
+            provstr = f" «{norm_origin} · {source}»"
+        elif norm_origin:
+            provstr = f" «{norm_origin}»"
+        elif source:
+            provstr = f" «↤ {source}»"
+        else:
+            provstr = ""
+        confstr = f" (conf: {norm_conf})" if norm_conf else ""
         tagstr = (" " + " ".join(f"#{t}" for t in norm)) if norm else ""
-        out = [f"✅ Stored (id: {new_id}){typestr}{tagstr}: {text}"]
-        if type_warning:
-            out.append(type_warning)
+        out = [f"✅ Stored (id: {new_id}){typestr}{provstr}{confstr}{tagstr}: {text}"]
+        for w in (type_warning, origin_warning, conf_warning):
+            if w:
+                out.append(w)
         top_sim = _sim(related[0]) if related else None
         if top_sim is not None and top_sim >= _DUP_THRESHOLD:
             dup = related[0]
@@ -558,34 +761,161 @@ def add_memory(text: str, user_id: str = "", tags: str = "", mem_type: str = "")
         return f"❌ Save failed: {e}"
 
 
+def _add_many(items: list, uid: str) -> list:
+    """Add many memories under a SINGLE lock pass (one meta load/save). `items` is a
+    list of dicts: text (required) plus optional tags, mem_type, origin, source,
+    confidence. Returns a per-item result list [{id, text, type, origin, source,
+    conf, tags, warnings, dup}]. Lenient (principle: store + warn, never drop data):
+    an unknown type/origin/confidence is dropped with a warning but the memory is
+    still stored; an item with no text is skipped (id=None) with a warning. Shared
+    by the add_memories tool and the file-ingest CLI."""
+    out = []
+    with _store_lock:
+        meta = _load_meta()
+        for it in items:
+            text = (str(it.get("text") or "")).strip()
+            warnings = []
+            if not text:
+                out.append({"id": None, "text": "", "warnings": ["empty text — skipped"]})
+                continue
+            norm = normalize_tags(it.get("tags"))
+            nt = normalize_type(it.get("mem_type"))
+            if nt is None:
+                warnings.append(f"unknown type '{it.get('mem_type')}' ignored")
+                nt = ""
+            no = normalize_origin(it.get("origin"))
+            if no is None:
+                warnings.append(f"unknown origin '{it.get('origin')}' ignored")
+                no = ""
+            src = (str(it.get("source") or "")).strip()
+            nc = normalize_confidence(it.get("confidence"))
+            if nc is None:
+                warnings.append(f"unknown confidence '{it.get('confidence')}' ignored")
+                nc = ""
+            near = _dense_search(text, uid, 1)
+            dup = None
+            if near and near[0].get("score") is not None and (1.0 - near[0]["score"]) >= _DUP_THRESHOLD:
+                dup = near[0].get("id")
+            added = _results(m.add(text, user_id=uid, infer=False))
+            mid = added[0].get("id") if added else None
+            if mid:
+                _apply_meta(meta, mid, norm, nt, no, src, nc)
+            out.append({"id": mid, "text": text, "type": nt, "origin": no, "source": src,
+                        "conf": nc, "tags": norm, "warnings": warnings, "dup": dup})
+        _save_meta(meta)
+    return out
+
+
+def _inline_labels(mtype: str, origin: str, source: str, conf: str, tags: list) -> str:
+    """Build the ' [type] «origin · source» (conf: x) #tags' label suffix from raw
+    values (the batch/CLI counterpart of the _fmt_* map helpers)."""
+    typestr = f" [{mtype}]" if mtype else ""
+    if origin and source:
+        provstr = f" «{origin} · {source}»"
+    elif origin:
+        provstr = f" «{origin}»"
+    elif source:
+        provstr = f" «↤ {source}»"
+    else:
+        provstr = ""
+    confstr = f" (conf: {conf})" if conf else ""
+    tagstr = (" " + " ".join(f"#{t}" for t in tags)) if tags else ""
+    return f"{typestr}{provstr}{confstr}{tagstr}"
+
+
+@mcp.tool()
+def add_memories(items_json: str, user_id: str = "") -> str:
+    """Batch-store MANY memories in ONE locked pass — the bulk counterpart of
+    add_memory. `items_json` is a JSON array of objects, each with a required
+    `text` and the same optional fields as add_memory: `tags`, `mem_type`,
+    `origin`, `source`, `confidence`. Example:
+      [{"text":"We deploy on Fridays","mem_type":"decision","confidence":"high"},
+       {"text":"Cache is Redis","tags":"infra"}]
+    Use it to ingest several facts at once (or from a file) instead of many
+    add_memory calls. Lenient: an item with an unknown type/origin/confidence is
+    still stored (the bad field is dropped + flagged); an item with no text is
+    skipped. Returns the new ids plus a summary of warnings and near-duplicate
+    flags — reconcile any flagged duplicates with update_memory/delete_memory."""
+    try:
+        items = json.loads(items_json)
+    except (ValueError, TypeError) as e:
+        return f"❌ items_json is not valid JSON: {e}"
+    if not isinstance(items, list) or not items:
+        return "❌ items_json must be a non-empty JSON array of objects."
+    if any(not isinstance(it, dict) for it in items):
+        return "❌ each item must be a JSON object with at least a 'text' field."
+    uid = user_id or DEFAULT_USER
+    try:
+        results = _add_many(items, uid)
+    except Exception as e:
+        return f"❌ Batch add failed: {e}"
+    stored = [r for r in results if r.get("id")]
+    skipped = [r for r in results if not r.get("id")]
+    dups = [r for r in stored if r.get("dup")]
+    head = (f"✅ Stored {len(stored)}/{len(results)} memories"
+            + (f" ({len(skipped)} skipped)" if skipped else "") + ":")
+    lines = [head]
+    for i, r in enumerate(results, 1):
+        if not r.get("id"):
+            lines.append(f"  {i}. ⏭️  skipped — {'; '.join(r.get('warnings') or [])}")
+            continue
+        label = _inline_labels(r["type"], r["origin"], r["source"], r["conf"], r["tags"])
+        lines.append(f"  {i}. [id: {r['id']}]{label}: {r['text']}")
+        for w in r.get("warnings") or []:
+            lines.append(f"       ⚠️ {w}")
+    if dups:
+        lines.append(f"\n⚠️ {len(dups)} look like near-duplicates of existing memories "
+                     f"(cosine ≥ {_DUP_THRESHOLD}); review and reconcile:")
+        for r in dups:
+            lines.append(f"  • [id: {r['id']}] ≈ [id: {r['dup']}]: {r['text']}")
+    return "\n".join(lines)
+
+
+def _apply_update(meta: dict, memory_id: str, text: str) -> None:
+    """Archive the current text, replace it in the store, and resync the core file
+    if the memory is pinned. Shared by update_memory and restore_memory. Mutates
+    `meta` (history); the caller persists."""
+    _archive_version(meta, memory_id, "update")
+    m.update(memory_id, text)
+    if memory_id in meta["pinned"]:
+        _sync_core_file(_core_items(meta))
+
+
 @mcp.tool()
 def update_memory(memory_id: str, text: str) -> str:
     """Replace an existing memory's content (by id) with refined or merged text.
     Use this during reconciliation when new information updates/merges an existing
-    memory, so you don't create duplicates."""
+    memory, so you don't create duplicates. The prior text is archived to the
+    memory's history first (no silent overwrite); see memory_history /
+    restore_memory."""
     try:
         with _store_lock:
-            m.update(memory_id, text)
             meta = _load_meta()
-            if memory_id in meta["pinned"]:
-                _sync_core_file(_core_items(meta))
+            _apply_update(meta, memory_id, text)
+            _save_meta(meta)
         return f"✅ Updated memory '{memory_id}': {text}"
     except Exception as e:
         return f"❌ Update failed: {e}"
 
 
 @mcp.tool()
-def search_memories(query: str, user_id: str = "", tags: str = "", mem_type: str = "") -> str:
+def search_memories(query: str, user_id: str = "", tags: str = "", mem_type: str = "",
+                    origin: str = "", min_confidence: str = "",
+                    since: str = "", until: str = "", changed_since: str = "") -> str:
     """Search the user's long-term memory (shared across all their LLM clients).
     Call this FIRST at the start of a task (with its key terms) and BEFORE asking
     the user for information they may have provided before -- recalling is cheaper
     than re-asking. Optionally pass `tags` (comma/space-separated) to scope results
-    to memories carrying ANY of those tags (e.g. a project name), and/or `mem_type`
-    to scope to ONE semantic category (fact, preference, decision, instruction,
-    goal, commitment, relationship, context, event, learning, observation,
-    artifact, error). Filters combine (AND across the two dimensions). Returns
-    memories with IDs (plus 📌, a [type] label, and #tags) so you can update_memory
-    / delete_memory them."""
+    to memories carrying ANY of those tags (e.g. a project name), `mem_type` to
+    scope to ONE semantic category (fact, preference, decision, instruction, goal,
+    commitment, relationship, context, event, learning, observation, artifact,
+    error), `origin` to scope by provenance (explicit, inferred, imported), and
+    `min_confidence` (low, medium, high) to keep only memories rated at least that
+    confident (memories with NO confidence are excluded when this is set). Temporal
+    scope (date 'YYYY-MM-DD', inclusive): `since`/`until` filter by CREATED date,
+    `changed_since` by last-CHANGED date (updated, else created). All filters
+    combine (AND). Returns memories with IDs (plus 📌, a [type] label, «provenance»,
+    a (conf: …) label, and #tags) so you can update_memory / delete_memory them."""
     try:
         uid = user_id or DEFAULT_USER
         want = set(normalize_tags(tags))
@@ -593,11 +923,30 @@ def search_memories(query: str, user_id: str = "", tags: str = "", mem_type: str
         if want_type is None:
             return (f"❌ Unknown memory type '{mem_type}'. Valid types: "
                     f"{', '.join(MEMORY_TYPES)} (or omit mem_type).")
+        want_origin = normalize_origin(origin)
+        if want_origin is None:
+            return (f"❌ Unknown origin '{origin}'. Valid origins: "
+                    f"{', '.join(PROVENANCE_ORIGINS)} (or omit origin).")
+        want_conf = normalize_confidence(min_confidence)
+        if want_conf is None:
+            return (f"❌ Unknown confidence '{min_confidence}'. Valid: "
+                    f"{', '.join(CONFIDENCE_LEVELS)} (or omit min_confidence).")
+        since_d, until_d, changed_d = parse_date(since), parse_date(until), parse_date(changed_since)
+        for label, raw, val in (("since", since, since_d), ("until", until, until_d),
+                                ("changed_since", changed_since, changed_d)):
+            if val is None:
+                return f"❌ Invalid {label} date '{raw}'. Use YYYY-MM-DD."
+        min_rank = CONFIDENCE_RANK.get(want_conf, 0)
+        temporal = bool(since_d or until_d or changed_d)
+        need_filter = bool(want or want_type or want_origin or want_conf or temporal)
         with _store_lock:
             meta = _load_meta()
             tagmap = meta.get("tags", {})
             typemap = meta.get("types", {})
-            if want or want_type:
+            provmap = meta.get("provenance", {})
+            confmap = meta.get("confidence", {})
+            tindex = _time_index(uid) if temporal else {}
+            if need_filter:
                 # Pull a larger pool so the post-filter still fills SEARCH_TOPK.
                 pool = _semantic_search(query, uid, max(SEARCH_TOPK * 10, 100))
                 results = []
@@ -607,6 +956,20 @@ def search_memories(query: str, user_id: str = "", tags: str = "", mem_type: str
                         continue
                     if want_type and typemap.get(mid) != want_type:
                         continue
+                    if want_origin and (provmap.get(mid) or {}).get("origin") != want_origin:
+                        continue
+                    if want_conf and CONFIDENCE_RANK.get(confmap.get(mid), 0) < min_rank:
+                        continue
+                    if temporal:
+                        created_raw, updated_raw = tindex.get(mid, ("", ""))
+                        cdate = date_of(created_raw)
+                        chdate = date_of(updated_raw or created_raw)
+                        if since_d and cdate < since_d:
+                            continue
+                        if until_d and (not cdate or cdate > until_d):
+                            continue
+                        if changed_d and chdate < changed_d:
+                            continue
                     results.append(r)
                     if len(results) >= SEARCH_TOPK:
                         break
@@ -618,6 +981,16 @@ def search_memories(query: str, user_id: str = "", tags: str = "", mem_type: str
         scope_bits = []
         if want_type:
             scope_bits.append(f"type: {want_type}")
+        if want_origin:
+            scope_bits.append(f"origin: {want_origin}")
+        if want_conf:
+            scope_bits.append(f"min_confidence: {want_conf}")
+        if since_d:
+            scope_bits.append(f"since: {since_d}")
+        if until_d:
+            scope_bits.append(f"until: {until_d}")
+        if changed_d:
+            scope_bits.append(f"changed_since: {changed_d}")
         if want:
             scope_bits.append("tags: " + ", ".join(sorted(want)))
         scope = (" [" + "; ".join(scope_bits) + "]") if scope_bits else ""
@@ -628,31 +1001,61 @@ def search_memories(query: str, user_id: str = "", tags: str = "", mem_type: str
             mid = r.get("id")
             pin = " 📌" if mid in pinned else ""
             out += (f"{i}. [id: {mid or 'N/A'}]{pin}{_fmt_type(typemap, mid)} "
-                    f"{r.get('memory', '(empty)')}{_fmt_tags(tagmap, mid)}\n")
+                    f"{r.get('memory', '(empty)')}"
+                    f"{_fmt_provenance(provmap, mid)}{_fmt_confidence(confmap, mid)}"
+                    f"{_fmt_tags(tagmap, mid)}\n")
         return out
     except Exception as e:
         return f"❌ Search failed: {e}"
 
 
 @mcp.tool()
-def list_memories(user_id: str = "") -> str:
+def list_memories(user_id: str = "", since: str = "", until: str = "") -> str:
     """List all stored memories for the (default) user. Pinned (core) memories are
-    marked with 📌, the semantic [type] is shown when set, and any tags as #tag."""
+    marked with 📌, the semantic [type] is shown when set, «provenance» and a
+    (conf: …) label when set, and any tags as #tag. Optionally restrict to memories
+    CREATED within an inclusive date window ('YYYY-MM-DD'): `since` / `until`."""
     try:
+        since_d, until_d = parse_date(since), parse_date(until)
+        for label, raw, val in (("since", since, since_d), ("until", until, until_d)):
+            if val is None:
+                return f"❌ Invalid {label} date '{raw}'. Use YYYY-MM-DD."
         with _store_lock:
             results = _get_all(user_id or DEFAULT_USER)
             meta = _load_meta()
             pinned = set(meta["pinned"])
             tagmap = meta.get("tags", {})
             typemap = meta.get("types", {})
+            provmap = meta.get("provenance", {})
+            confmap = meta.get("confidence", {})
+        if since_d or until_d:
+            kept = []
+            for r in results:
+                cdate = date_of(r.get("created_at"))
+                if since_d and (not cdate or cdate < since_d):
+                    continue
+                if until_d and (not cdate or cdate > until_d):
+                    continue
+                kept.append(r)
+            results = kept
         if not results:
+            if since_d or until_d:
+                return "📋 No memories in that date range."
             return "📋 No memories stored."
-        out = f"📋 Memories (total {len(results)}):\n\n"
+        bits = []
+        if since_d:
+            bits.append(f"since {since_d}")
+        if until_d:
+            bits.append(f"until {until_d}")
+        scope = (" (" + ", ".join(bits) + ")") if bits else ""
+        out = f"📋 Memories (total {len(results)}){scope}:\n\n"
         for i, r in enumerate(results, 1):
             mid = r.get("id")
             pin = " 📌" if mid in pinned else ""
             out += (f"{i}. [ID: {mid or 'N/A'}]{pin}{_fmt_type(typemap, mid)} "
-                    f"{r.get('memory', '(empty)')}{_fmt_tags(tagmap, mid)}\n")
+                    f"{r.get('memory', '(empty)')}"
+                    f"{_fmt_provenance(provmap, mid)}{_fmt_confidence(confmap, mid)}"
+                    f"{_fmt_tags(tagmap, mid)}\n")
         return out
     except Exception as e:
         return f"❌ List failed: {e}"
@@ -661,23 +1064,90 @@ def list_memories(user_id: str = "") -> str:
 @mcp.tool()
 def delete_memory(memory_id: str) -> str:
     """Delete a memory by its ID. Use during reconciliation to remove an outdated
-    or contradicted memory."""
+    or contradicted memory. The prior text is archived to history first, so a
+    deleted memory can still be inspected (memory_history) and re-added
+    (restore_memory)."""
     try:
         with _store_lock:
-            m.delete(memory_id)
             meta = _load_meta()
+            _archive_version(meta, memory_id, "delete")
+            m.delete(memory_id)
             was_pinned = memory_id in meta["pinned"]
             if was_pinned:
                 meta["pinned"] = [i for i in meta["pinned"] if i != memory_id]
             meta["access"].pop(memory_id, None)
             meta["tags"].pop(memory_id, None)
             meta["types"].pop(memory_id, None)
+            meta["provenance"].pop(memory_id, None)
+            meta["confidence"].pop(memory_id, None)
+            # meta["history"][memory_id] is intentionally KEPT (restore-after-delete).
             _save_meta(meta)
             if was_pinned:
                 _sync_core_file(_core_items(meta))
         return f"✅ Deleted memory '{memory_id}'."
     except Exception as e:
         return f"❌ Delete failed: {e}"
+
+
+@mcp.tool()
+def memory_history(memory_id: str) -> str:
+    """Show a memory's change history — the prior versions archived by
+    update_memory / delete_memory (most recent first), so an overwrite or delete is
+    never silently lost. Restore one with restore_memory(id, n)."""
+    try:
+        with _store_lock:
+            meta = _load_meta()
+            hist = list(meta["history"].get(memory_id) or [])
+            current = _memory_text(memory_id)
+        if not hist and current is None:
+            return f"❌ No memory or history for id '{memory_id}'."
+        lines = [f"🕓 History for '{memory_id}' ({len(hist)} archived version(s)):"]
+        if current is not None:
+            lines.append(f"  • CURRENT: {current}")
+        else:
+            lines.append("  • CURRENT: (deleted — restore re-adds it as a NEW id)")
+        for n, ent in enumerate(reversed(hist), 1):    # n=1 == most recent prior
+            lines.append(f"  • n={n} [{ent.get('op', '?')} @ {ent.get('ts', '?')}]: "
+                         f"{ent.get('text', '')}")
+        if hist:
+            lines.append("→ restore_memory(id, n) restores version n (n=1 = most recent prior).")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ History failed: {e}"
+
+
+@mcp.tool()
+def restore_memory(memory_id: str, n: int = 1) -> str:
+    """Restore a previous version of a memory from its history (see memory_history).
+    `n` counts back from the most recent archived version (n=1 = the latest prior
+    text). If the memory still exists it is updated in place (the current text is
+    archived first, so the restore is itself reversible). If it was deleted, the old
+    text is re-added as a NEW memory id (the original vector is gone); its tags /
+    type / provenance / confidence are NOT carried over — re-apply them if needed."""
+    try:
+        with _store_lock:
+            meta = _load_meta()
+            hist = list(meta["history"].get(memory_id) or [])
+            if not hist:
+                return f"❌ No archived history for '{memory_id}'."
+            if n < 1 or n > len(hist):
+                return (f"❌ n={n} out of range; history has {len(hist)} version(s) "
+                        f"(n=1..{len(hist)}).")
+            entry = list(reversed(hist))[n - 1]
+            text = entry.get("text", "")
+            if _memory_text(memory_id) is not None:
+                _apply_update(meta, memory_id, text)
+                _save_meta(meta)
+                return f"♻️ Restored '{memory_id}' to version n={n}: {text}"
+            uid = entry.get("user_id") or DEFAULT_USER
+            added = _results(m.add(text, user_id=uid, infer=False))
+            new_id = added[0].get("id", "N/A") if added else "N/A"
+            _save_meta(meta)
+            return (f"♻️ '{memory_id}' had been deleted; re-added its version n={n} as a NEW "
+                    f"memory (id: {new_id}): {text}\n"
+                    f"(tags/type/provenance/confidence were not carried over — re-apply if needed.)")
+    except Exception as e:
+        return f"❌ Restore failed: {e}"
 
 
 @mcp.tool()
@@ -732,6 +1202,67 @@ def set_memory_type(memory_id: str, mem_type: str = "") -> str:
         return f"🗂️  Cleared the type on '{memory_id}'."
     except Exception as e:
         return f"❌ Set type failed: {e}"
+
+
+@mcp.tool()
+def set_provenance(memory_id: str, origin: str = "", source: str = "") -> str:
+    """Set (or clear) a memory's PROVENANCE -- where it came from. `origin` is one
+    of: explicit (the user stated it), inferred (you deduced it), imported (from a
+    file/doc); `source` is free text (e.g. "user chat", "file:report.pdf"). Pass
+    BOTH empty to clear. Provenance lives in the sidecar (not the vector store), so
+    it survives update_memory and never affects embeddings. Use it to mark how
+    trustworthy/where-from a memory is, then scope recall with
+    search_memories(origin=...)."""
+    try:
+        norm_origin = normalize_origin(origin)
+        if norm_origin is None:
+            return (f"❌ Unknown origin '{origin}'. Valid origins: "
+                    f"{', '.join(PROVENANCE_ORIGINS)} (empty string clears provenance).")
+        source = (source or "").strip()
+        with _store_lock:
+            if _memory_text(memory_id) is None:
+                return f"❌ No memory with id '{memory_id}'."
+            meta = _load_meta()
+            if norm_origin or source:
+                meta["provenance"][memory_id] = {"origin": norm_origin, "source": source}
+            else:
+                meta["provenance"].pop(memory_id, None)
+            _save_meta(meta)
+        if norm_origin or source:
+            shown = " · ".join(x for x in (norm_origin, source) if x)
+            return f"🧭 Set provenance of '{memory_id}': «{shown}»."
+        return f"🧭 Cleared provenance on '{memory_id}'."
+    except Exception as e:
+        return f"❌ Set provenance failed: {e}"
+
+
+@mcp.tool()
+def set_confidence(memory_id: str, confidence: str = "") -> str:
+    """Set (or clear) a memory's CONFIDENCE -- how sure you are it is true: one of
+    low, medium, high. Pass an EMPTY string to clear it. Confidence lives in the
+    sidecar (not the vector store), so it survives update_memory and never affects
+    embeddings. Use it to quality-gate recall with search_memories(min_confidence=...)
+    and to drive curation (a low-confidence, old, unused memory is a re-review
+    candidate). YOU (the agent) judge the level; there is no fake numeric precision."""
+    try:
+        norm_conf = normalize_confidence(confidence)
+        if norm_conf is None:
+            return (f"❌ Unknown confidence '{confidence}'. Valid: "
+                    f"{', '.join(CONFIDENCE_LEVELS)} (empty string clears it).")
+        with _store_lock:
+            if _memory_text(memory_id) is None:
+                return f"❌ No memory with id '{memory_id}'."
+            meta = _load_meta()
+            if norm_conf:
+                meta["confidence"][memory_id] = norm_conf
+            else:
+                meta["confidence"].pop(memory_id, None)
+            _save_meta(meta)
+        if norm_conf:
+            return f"🎚️  Set confidence of '{memory_id}' to {norm_conf}."
+        return f"🎚️  Cleared the confidence on '{memory_id}'."
+    except Exception as e:
+        return f"❌ Set confidence failed: {e}"
 
 
 @mcp.tool()
@@ -849,6 +1380,7 @@ def curate_memories() -> str:
             _save_meta(meta)
         core_ids = {it["id"] for it in _core_items(meta)}
         clusters = _duplicate_clusters(uid, _DUP_THRESHOLD, _DUP_MAX_DOCS)
+        conflicts = _conflict_candidates(uid, _CONFLICT_LOW, _DUP_THRESHOLD, _DUP_MAX_DOCS)
     if not results:
         return "Nothing to curate: no memories stored."
     lines = [
@@ -860,14 +1392,17 @@ def curate_memories() -> str:
         "",
     ]
     typemap = meta.get("types", {})
+    provmap = meta.get("provenance", {})
+    confmap = meta.get("confidence", {})
     for r in results:
         mid = r.get("id")
         st = meta["access"].get(mid) or {}
         created = (r.get("created_at") or "?")[:10]
         pin = " 📌" if mid in core_ids else ""
-        lines.append(f"- [id: {mid}]{pin}{_fmt_type(typemap, mid)} (created {created}, "
-                     f"used {st.get('count', 0)}x, last {st.get('last') or 'never'}) "
-                     f"{r.get('memory', '(empty)')}")
+        lines.append(f"- [id: {mid}]{pin}{_fmt_type(typemap, mid)}{_fmt_provenance(provmap, mid)}"
+                     f"{_fmt_confidence(confmap, mid)} "
+                     f"(created {created}, used {st.get('count', 0)}x, "
+                     f"last {st.get('last') or 'never'}) {r.get('memory', '(empty)')}")
     if clusters:
         lines += [
             "",
@@ -878,22 +1413,38 @@ def curate_memories() -> str:
             lines.append(f"  • {len(cl)} similar:")
             for it in cl:
                 lines.append(f"      [id: {it['id']}] {it['memory'][:110]}")
+    if conflicts:
+        lines += [
+            "",
+            f"⚔️ Conflict suspects (cosine in [{_CONFLICT_LOW}, {_DUP_THRESHOLD}) and "
+            "disagreeing on a number/weekday/boolean/negation) — these may CONTRADICT "
+            "each other; confirm, then keep the current one and reconcile the stale one:",
+        ]
+        for c in conflicts:
+            lines.append(f"  • (sim {c['sim']:.2f})")
+            lines.append(f"      [id: {c['a']['id']}] {c['a']['memory'][:110]}")
+            lines.append(f"      [id: {c['b']['id']}] {c['b']['memory'][:110]}")
     lines += [
         "",
         "Curate now, one change at a time, using the tools:",
         "1. MERGE near-duplicates (see the 🔁 clusters above when present): "
         "update_memory(keep_id, merged_text) then delete_memory(other_id). Skip a "
         "cluster whose members are genuinely distinct facts.",
-        "2. DELETE memories that are wrong, obsolete, superseded, or one-off trivia.",
-        "3. REWRITE vague or bloated entries into one atomic, self-contained fact (update_memory).",
-        "4. TYPE: set_memory_type on memories whose [type] is missing or wrong "
+        "2. RESOLVE conflicts (see the ⚔️ suspects when present): decide which side is "
+        "current, update_memory the survivor and delete_memory the stale one. The flag "
+        "is a heuristic — confirm a real contradiction before acting.",
+        "3. DELETE memories that are wrong, obsolete, superseded, or one-off trivia.",
+        "4. REWRITE vague or bloated entries into one atomic, self-contained fact (update_memory).",
+        "5. TYPE: set_memory_type on memories whose [type] is missing or wrong "
         "(fact, preference, decision, instruction, goal, commitment, relationship, "
         "context, event, learning, observation, artifact, error) so recall can be "
         "scoped by kind.",
-        "5. CORE: pin_memory the few durable facts needed in most sessions (a high "
+        "6. CONFIDENCE: set_confidence(id, low|medium|high) where it clarifies trust; a "
+        "low-confidence + old + unused memory is a re-review candidate (verify before deleting).",
+        "7. CORE: pin_memory the few durable facts needed in most sessions (a high "
         "'used' count is a hint); unpin_memory core entries that no longer earn their "
         "always-on slot. Stay within the budget.",
-        "6. Low usage alone is NOT a reason to delete: keep facts that are still true and durable.",
+        "8. Low usage alone is NOT a reason to delete: keep facts that are still true and durable.",
         "Finish with a short summary of what changed.",
     ]
     return "\n".join(lines)

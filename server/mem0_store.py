@@ -15,6 +15,7 @@ import time
 import shutil
 import socket
 import logging
+import datetime
 
 logger = logging.getLogger("mem0-mcp.store")
 
@@ -38,7 +39,7 @@ def atomic_write(path: str, text: str) -> None:
 def load_meta(path: str) -> dict:
     """Load the pin/usage sidecar, tolerating a missing or corrupt file. Always
     returns a dict with at least {"pinned": [...], "access": {...}, "tags": {...},
-    "types": {...}}."""
+    "types": {...}, "provenance": {...}, "confidence": {...}, "history": {...}}."""
     try:
         with open(path, encoding="utf-8") as f:
             meta = json.load(f)
@@ -50,6 +51,9 @@ def load_meta(path: str) -> dict:
     meta.setdefault("access", {})
     meta.setdefault("tags", {})
     meta.setdefault("types", {})
+    meta.setdefault("provenance", {})
+    meta.setdefault("confidence", {})
+    meta.setdefault("history", {})
     return meta
 
 
@@ -124,6 +128,89 @@ def normalize_type(mem_type) -> "str | None":
     if not s:
         return ""
     return s if s in MEMORY_TYPES else None
+
+
+# ---- provenance (where a memory came from) -----------------------------------
+# memanto-style provenance so the agent can tell EXPLICIT facts (the user said it)
+# from INFERRED ones (deduced from context) or IMPORTED ones (ingested from a
+# file/doc), plus a free-text source ref. Like tags/types this lives in the sidecar
+# as provenance[id] = {"origin": <one of PROVENANCE_ORIGINS or "">, "source": <str>},
+# so it survives mem0's update() and never affects embeddings/ranking.
+PROVENANCE_ORIGINS = (
+    "explicit",   # stated directly by the user / an authoritative source
+    "inferred",   # deduced by the agent from context (less certain)
+    "imported",   # ingested from an external artifact (file, doc, page)
+)
+
+
+def normalize_origin(origin) -> "str | None":
+    """Normalize a provenance origin to one of PROVENANCE_ORIGINS.
+
+    Same 3-way contract as normalize_type: "" for empty/None, the canonical
+    lowercase origin when recognized (leading '#'/whitespace tolerated), or None
+    when non-empty but unrecognized so the caller can reject/warn with the list."""
+    if not origin:
+        return ""
+    s = str(origin).strip().lstrip("#").strip().lower()
+    if not s:
+        return ""
+    return s if s in PROVENANCE_ORIGINS else None
+
+
+# ---- confidence (how sure we are a memory is true) ---------------------------
+# A COARSE, deterministic enum -- not a float -- so there is no fake precision and
+# the CLIENT (the brain) assigns it by judgement. Stored in the sidecar like
+# tags/types/provenance, so it survives mem0's update() and never affects
+# embeddings/ranking. Used to (a) render a label, (b) hint curation (low + old +
+# unused = re-review candidate), (c) optionally scope recall with
+# search_memories(min_confidence=...) and an opt-in confidence tie-break.
+CONFIDENCE_LEVELS = ("low", "medium", "high")
+# Ordinal rank for the min_confidence comparison and the optional tie-break.
+CONFIDENCE_RANK = {"low": 1, "medium": 2, "high": 3}
+
+
+def normalize_confidence(value) -> "str | None":
+    """Normalize a confidence to one of CONFIDENCE_LEVELS.
+
+    Same 3-way contract as normalize_type/normalize_origin: "" for empty/None, the
+    canonical lowercase level when recognized (leading '#'/whitespace tolerated), or
+    None when non-empty but unrecognized so the caller can reject/warn with the list."""
+    if not value:
+        return ""
+    s = str(value).strip().lstrip("#").strip().lower()
+    if not s:
+        return ""
+    return s if s in CONFIDENCE_LEVELS else None
+
+
+# ---- temporal filtering (day-grained, deterministic) -------------------------
+# created_at / updated_at already live in the Chroma payload, so since/until/
+# changed_since filters are a pure post-filter over the search pool -- ranking is
+# never touched. We compare at DATE granularity to keep the contract simple and
+# predictable regardless of the time/zone suffix on a stored ISO timestamp.
+
+def parse_date(value) -> "str | None":
+    """Parse a date filter into a canonical 'YYYY-MM-DD' string for day-grained
+    temporal comparison. Accepts 'YYYY-MM-DD' or any ISO-8601 prefix (e.g.
+    '2026-06-14T10:00:00' -> '2026-06-14'; the time part is ignored). Returns ""
+    for empty/None, the normalized date when valid, or None when non-empty but
+    unparseable so the caller can reject it."""
+    if not value:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    head = s[:10]
+    try:
+        datetime.date.fromisoformat(head)
+    except ValueError:
+        return None
+    return head
+
+
+def date_of(ts) -> str:
+    """The 'YYYY-MM-DD' day of an ISO timestamp (or '' if missing/blank)."""
+    return (str(ts)[:10]) if ts else ""
 
 
 # ---- core (always-on) memory mirror ------------------------------------------

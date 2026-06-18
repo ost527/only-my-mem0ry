@@ -1,0 +1,13 @@
+# Optional dependencies for server/ingest_file.py (file -> memory ingest).
+#
+# These are NOT runtime deps of the server and are deliberately kept OUT of
+# requirements.txt: install them only if you use the file-ingest CLI to ingest
+# PDF / DOCX / XLSX files. Plain text, Markdown, CSV/TSV, JSON and logs need
+# nothing beyond the stdlib.
+#
+#   .venv/bin/pip install -r requirements-ingest.txt
+#
+# Ranges are capped below the next major to keep fresh installs reproducible.
+pypdf>=4,<6           # .pdf
+python-docx>=1,<2     # .docx
+openpyxl>=3,<4        # .xlsx / .xlsm
