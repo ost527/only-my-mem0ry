@@ -37,7 +37,8 @@ def atomic_write(path: str, text: str) -> None:
 
 def load_meta(path: str) -> dict:
     """Load the pin/usage sidecar, tolerating a missing or corrupt file. Always
-    returns a dict with at least {"pinned": [...], "access": {...}}."""
+    returns a dict with at least {"pinned": [...], "access": {...}, "tags": {...},
+    "types": {...}}."""
     try:
         with open(path, encoding="utf-8") as f:
             meta = json.load(f)
@@ -48,6 +49,7 @@ def load_meta(path: str) -> dict:
     meta.setdefault("pinned", [])
     meta.setdefault("access", {})
     meta.setdefault("tags", {})
+    meta.setdefault("types", {})
     return meta
 
 
@@ -78,6 +80,50 @@ def normalize_tags(tags) -> list:
         if t:
             seen.add(t)
     return sorted(seen)
+
+
+# ---- memory type (single semantic category per memory) -----------------------
+# A controlled vocabulary (memanto-style) so the agent can categorize WHAT a
+# memory is and later scope recall to one kind -- e.g. "show me my decisions" or
+# "recall the user's preferences". Unlike tags (free-form, many per memory), a
+# memory has at most ONE type, drawn from this fixed set, so the categorization
+# stays consistent and filterable. Stored in the sidecar (memory_meta.json) like
+# tags, so it survives mem0's update() and never affects embeddings/ranking.
+MEMORY_TYPES = (
+    "fact",          # an objective, verifiable statement
+    "preference",    # how the user likes things done
+    "decision",      # a choice that was made (and ideally why)
+    "instruction",   # a standing directive the agent should follow
+    "goal",          # a desired future outcome
+    "commitment",    # a promise/obligation with a due expectation
+    "relationship",  # how entities (people, systems, projects) relate
+    "context",       # background/situational information
+    "event",         # something that happened at a point in time
+    "learning",      # an insight/lesson derived from experience
+    "observation",   # a noted state of the world (less certain than a fact)
+    "artifact",      # a concrete output/asset (file, path, link, snippet)
+    "error",         # a recorded mistake/failure to avoid repeating
+)
+
+
+def normalize_type(mem_type) -> "str | None":
+    """Normalize a memory type to one of MEMORY_TYPES.
+
+    Returns:
+      - ""   when the input is empty/None (i.e. "no type"),
+      - the canonical lowercase type when it is recognized (leading '#' and
+        surrounding whitespace tolerated, e.g. " #Decision " -> "decision"),
+      - None when the input is non-empty but NOT a recognized type, so callers
+        can reject it (or warn) with the valid list.
+
+    Pure and deterministic (no aliases/fuzzy matching) so behaviour is
+    predictable; the caller surfaces MEMORY_TYPES on a None result."""
+    if not mem_type:
+        return ""
+    s = str(mem_type).strip().lstrip("#").strip().lower()
+    if not s:
+        return ""
+    return s if s in MEMORY_TYPES else None
 
 
 # ---- core (always-on) memory mirror ------------------------------------------

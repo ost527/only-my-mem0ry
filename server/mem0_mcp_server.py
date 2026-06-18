@@ -60,6 +60,8 @@ from mem0_store import (
     render_core_file,
     core_used,
     normalize_tags,
+    normalize_type,
+    MEMORY_TYPES,
 )
 from mem0_retrieval import bm25_rank, rrf_merge, fuse_rescue, cluster_by_pairs
 
@@ -438,6 +440,12 @@ def _fmt_tags(tagmap: dict, mid) -> str:
     return ("  " + " ".join(f"#{t}" for t in tg)) if tg else ""
 
 
+def _fmt_type(typemap: dict, mid) -> str:
+    """Leading ' [fact]' label for a memory's semantic type, or '' if untyped."""
+    t = typemap.get(mid)
+    return f" [{t}]" if t else ""
+
+
 def _memory_text(memory_id: str):
     """Text of one memory straight from the vector store (any user_id), or None
     if the id no longer exists."""
@@ -474,7 +482,7 @@ def _sync_core_file(items: list) -> None:
 
 
 @mcp.tool()
-def add_memory(text: str, user_id: str = "", tags: str = "") -> str:
+def add_memory(text: str, user_id: str = "", tags: str = "", mem_type: str = "") -> str:
     """Store a memory. Call this THE MOMENT a durable, reusable fact appears --
     a decision, preference, config value, path/identifier, environment quirk, or
     recurring command -- not only at the end of a task. Never store secrets
@@ -488,8 +496,21 @@ def add_memory(text: str, user_id: str = "", tags: str = "") -> str:
       call delete_memory(id). Only add when it is genuinely new.
     If user_id is omitted, the default user is used. Optionally pass `tags`
     (comma/space-separated, e.g. a project name like "32min") to scope later
-    search_memories(tags=...); tags live in the sidecar and survive update_memory."""
+    search_memories(tags=...); tags live in the sidecar and survive update_memory.
+    Optionally pass `mem_type` -- ONE semantic category that says what this memory
+    IS, from: fact, preference, decision, instruction, goal, commitment,
+    relationship, context, event, learning, observation, artifact, error -- so you
+    can later scope recall by kind (search_memories(mem_type=...)). An unrecognized
+    mem_type is ignored with a warning (the memory is still stored); you can set it
+    later with set_memory_type."""
     uid = user_id or DEFAULT_USER
+    norm_type = normalize_type(mem_type)
+    type_warning = None
+    if norm_type is None:                     # non-empty but not a recognized type
+        type_warning = (f"⚠️ Ignored unknown type '{mem_type}'. Valid types: "
+                        f"{', '.join(MEMORY_TYPES)}. Stored WITHOUT a type — set "
+                        f"one later with set_memory_type(id, type).")
+        norm_type = ""
     try:
         with _store_lock:
             # Dense nearest EXISTING memories (computed BEFORE the add) so we can
@@ -498,17 +519,23 @@ def add_memory(text: str, user_id: str = "", tags: str = "") -> str:
             added = _results(m.add(text, user_id=uid, infer=False))
             new_id = added[0].get("id", "N/A") if added else "N/A"
             norm = normalize_tags(tags)
-            if norm and new_id != "N/A":
+            if (norm or norm_type) and new_id != "N/A":
                 meta = _load_meta()
-                meta["tags"][new_id] = norm
+                if norm:
+                    meta["tags"][new_id] = norm
+                if norm_type:
+                    meta["types"][new_id] = norm_type
                 _save_meta(meta)
 
         def _sim(r):
             s = r.get("score")
             return None if s is None else 1.0 - s  # cosine distance -> similarity
 
+        typestr = f" [{norm_type}]" if norm_type else ""
         tagstr = (" " + " ".join(f"#{t}" for t in norm)) if norm else ""
-        out = [f"✅ Stored (id: {new_id}){tagstr}: {text}"]
+        out = [f"✅ Stored (id: {new_id}){typestr}{tagstr}: {text}"]
+        if type_warning:
+            out.append(type_warning)
         top_sim = _sim(related[0]) if related else None
         if top_sim is not None and top_sim >= _DUP_THRESHOLD:
             dup = related[0]
@@ -548,37 +575,60 @@ def update_memory(memory_id: str, text: str) -> str:
 
 
 @mcp.tool()
-def search_memories(query: str, user_id: str = "", tags: str = "") -> str:
+def search_memories(query: str, user_id: str = "", tags: str = "", mem_type: str = "") -> str:
     """Search the user's long-term memory (shared across all their LLM clients).
     Call this FIRST at the start of a task (with its key terms) and BEFORE asking
     the user for information they may have provided before -- recalling is cheaper
     than re-asking. Optionally pass `tags` (comma/space-separated) to scope results
-    to memories carrying ANY of those tags (e.g. a project name). Returns memories
-    with IDs (plus 📌 and #tags) so you can update_memory / delete_memory them."""
+    to memories carrying ANY of those tags (e.g. a project name), and/or `mem_type`
+    to scope to ONE semantic category (fact, preference, decision, instruction,
+    goal, commitment, relationship, context, event, learning, observation,
+    artifact, error). Filters combine (AND across the two dimensions). Returns
+    memories with IDs (plus 📌, a [type] label, and #tags) so you can update_memory
+    / delete_memory them."""
     try:
         uid = user_id or DEFAULT_USER
         want = set(normalize_tags(tags))
+        want_type = normalize_type(mem_type)
+        if want_type is None:
+            return (f"❌ Unknown memory type '{mem_type}'. Valid types: "
+                    f"{', '.join(MEMORY_TYPES)} (or omit mem_type).")
         with _store_lock:
             meta = _load_meta()
             tagmap = meta.get("tags", {})
-            if want:
-                # Pull a larger pool so the tag post-filter still fills SEARCH_TOPK.
+            typemap = meta.get("types", {})
+            if want or want_type:
+                # Pull a larger pool so the post-filter still fills SEARCH_TOPK.
                 pool = _semantic_search(query, uid, max(SEARCH_TOPK * 10, 100))
-                results = [r for r in pool
-                           if want & set(tagmap.get(r.get("id")) or [])][:SEARCH_TOPK]
+                results = []
+                for r in pool:
+                    mid = r.get("id")
+                    if want and not (want & set(tagmap.get(mid) or [])):
+                        continue
+                    if want_type and typemap.get(mid) != want_type:
+                        continue
+                    results.append(r)
+                    if len(results) >= SEARCH_TOPK:
+                        break
             else:
                 results = _semantic_search(query, uid, SEARCH_TOPK)
             _bump_access(meta, [r.get("id") for r in results])
             _save_meta(meta)
             pinned = set(meta["pinned"])
-        scope = (" [tags: " + ", ".join(sorted(want)) + "]") if want else ""
+        scope_bits = []
+        if want_type:
+            scope_bits.append(f"type: {want_type}")
+        if want:
+            scope_bits.append("tags: " + ", ".join(sorted(want)))
+        scope = (" [" + "; ".join(scope_bits) + "]") if scope_bits else ""
         if not results:
             return f"🔍 No results.{scope}"
         out = f"🔍 Results for '{query}'{scope}:\n\n"
         for i, r in enumerate(results, 1):
             mid = r.get("id")
             pin = " 📌" if mid in pinned else ""
-            out += f"{i}. [id: {mid or 'N/A'}]{pin} {r.get('memory', '(empty)')}{_fmt_tags(tagmap, mid)}\n"
+            out += (f"{i}. [id: {mid or 'N/A'}]{pin}{_fmt_type(typemap, mid)} "
+                    f"{r.get('memory', '(empty)')}{_fmt_tags(tagmap, mid)}\n")
         return out
     except Exception as e:
         return f"❌ Search failed: {e}"
@@ -587,20 +637,22 @@ def search_memories(query: str, user_id: str = "", tags: str = "") -> str:
 @mcp.tool()
 def list_memories(user_id: str = "") -> str:
     """List all stored memories for the (default) user. Pinned (core) memories are
-    marked with 📌, and any tags are shown as #tag."""
+    marked with 📌, the semantic [type] is shown when set, and any tags as #tag."""
     try:
         with _store_lock:
             results = _get_all(user_id or DEFAULT_USER)
             meta = _load_meta()
             pinned = set(meta["pinned"])
             tagmap = meta.get("tags", {})
+            typemap = meta.get("types", {})
         if not results:
             return "📋 No memories stored."
         out = f"📋 Memories (total {len(results)}):\n\n"
         for i, r in enumerate(results, 1):
             mid = r.get("id")
             pin = " 📌" if mid in pinned else ""
-            out += f"{i}. [ID: {mid or 'N/A'}]{pin} {r.get('memory', '(empty)')}{_fmt_tags(tagmap, mid)}\n"
+            out += (f"{i}. [ID: {mid or 'N/A'}]{pin}{_fmt_type(typemap, mid)} "
+                    f"{r.get('memory', '(empty)')}{_fmt_tags(tagmap, mid)}\n")
         return out
     except Exception as e:
         return f"❌ List failed: {e}"
@@ -619,6 +671,7 @@ def delete_memory(memory_id: str) -> str:
                 meta["pinned"] = [i for i in meta["pinned"] if i != memory_id]
             meta["access"].pop(memory_id, None)
             meta["tags"].pop(memory_id, None)
+            meta["types"].pop(memory_id, None)
             _save_meta(meta)
             if was_pinned:
                 _sync_core_file(_core_items(meta))
@@ -650,6 +703,35 @@ def tag_memory(memory_id: str, tags: str = "") -> str:
         return f"🏷️  Cleared all tags on '{memory_id}'."
     except Exception as e:
         return f"❌ Tag failed: {e}"
+
+
+@mcp.tool()
+def set_memory_type(memory_id: str, mem_type: str = "") -> str:
+    """Set (or clear) the semantic TYPE of an existing memory -- ONE category that
+    says what the memory IS, used to scope recall with search_memories(mem_type=...).
+    Valid types: fact, preference, decision, instruction, goal, commitment,
+    relationship, context, event, learning, observation, artifact, error. Pass an
+    EMPTY string to clear the type. The type lives in the sidecar (not the vector
+    store), so it survives update_memory and never affects embeddings."""
+    try:
+        norm_type = normalize_type(mem_type)
+        if norm_type is None:
+            return (f"❌ Unknown memory type '{mem_type}'. Valid types: "
+                    f"{', '.join(MEMORY_TYPES)} (empty string clears the type).")
+        with _store_lock:
+            if _memory_text(memory_id) is None:
+                return f"❌ No memory with id '{memory_id}'."
+            meta = _load_meta()
+            if norm_type:
+                meta["types"][memory_id] = norm_type
+            else:
+                meta["types"].pop(memory_id, None)
+            _save_meta(meta)
+        if norm_type:
+            return f"🗂️  Set type of '{memory_id}' to [{norm_type}]."
+        return f"🗂️  Cleared the type on '{memory_id}'."
+    except Exception as e:
+        return f"❌ Set type failed: {e}"
 
 
 @mcp.tool()
@@ -773,16 +855,19 @@ def curate_memories() -> str:
         f"Memory curation pass — {len(results)} memories, {len(core_ids)} pinned "
         f"to core (budget {CORE_BUDGET} chars).",
         "",
-        "Inventory (📌 = pinned to core; used = times retrieved, last = last retrieval):",
+        "Inventory (📌 = pinned to core; [type] = semantic category; "
+        "used = times retrieved, last = last retrieval):",
         "",
     ]
+    typemap = meta.get("types", {})
     for r in results:
         mid = r.get("id")
         st = meta["access"].get(mid) or {}
         created = (r.get("created_at") or "?")[:10]
         pin = " 📌" if mid in core_ids else ""
-        lines.append(f"- [id: {mid}]{pin} (created {created}, used {st.get('count', 0)}x, "
-                     f"last {st.get('last') or 'never'}) {r.get('memory', '(empty)')}")
+        lines.append(f"- [id: {mid}]{pin}{_fmt_type(typemap, mid)} (created {created}, "
+                     f"used {st.get('count', 0)}x, last {st.get('last') or 'never'}) "
+                     f"{r.get('memory', '(empty)')}")
     if clusters:
         lines += [
             "",
@@ -801,10 +886,14 @@ def curate_memories() -> str:
         "cluster whose members are genuinely distinct facts.",
         "2. DELETE memories that are wrong, obsolete, superseded, or one-off trivia.",
         "3. REWRITE vague or bloated entries into one atomic, self-contained fact (update_memory).",
-        "4. CORE: pin_memory the few durable facts needed in most sessions (a high "
+        "4. TYPE: set_memory_type on memories whose [type] is missing or wrong "
+        "(fact, preference, decision, instruction, goal, commitment, relationship, "
+        "context, event, learning, observation, artifact, error) so recall can be "
+        "scoped by kind.",
+        "5. CORE: pin_memory the few durable facts needed in most sessions (a high "
         "'used' count is a hint); unpin_memory core entries that no longer earn their "
         "always-on slot. Stay within the budget.",
-        "5. Low usage alone is NOT a reason to delete: keep facts that are still true and durable.",
+        "6. Low usage alone is NOT a reason to delete: keep facts that are still true and durable.",
         "Finish with a short summary of what changed.",
     ]
     return "\n".join(lines)

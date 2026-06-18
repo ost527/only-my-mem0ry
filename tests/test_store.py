@@ -5,10 +5,10 @@ import socket
 from mem0_store import (
     expand, atomic_write, load_meta, save_meta,
     render_core_file, core_used, is_backend_up,
-    normalize_tags, prune_old_backups,
+    normalize_tags, normalize_type, MEMORY_TYPES, prune_old_backups,
 )
 
-DEFAULTS = {"pinned": [], "access": {}, "tags": {}}
+DEFAULTS = {"pinned": [], "access": {}, "tags": {}, "types": {}}
 
 
 class TestExpand:
@@ -59,6 +59,7 @@ class TestMeta:
             "pinned": ["id1"],
             "access": {"id1": {"count": 2, "last": "2026-06-14"}},
             "tags": {"id1": ["proj", "infra"]},
+            "types": {"id1": "decision"},
             "extra": "쿠팡",
         }
         save_meta(p, meta)
@@ -66,6 +67,7 @@ class TestMeta:
         assert loaded["pinned"] == ["id1"]
         assert loaded["access"]["id1"]["count"] == 2
         assert loaded["tags"]["id1"] == ["proj", "infra"]
+        assert loaded["types"]["id1"] == "decision"
         assert loaded["extra"] == "쿠팡"
 
     def test_save_empty_dict_then_load_has_defaults(self, tmp_path):
@@ -110,6 +112,35 @@ class TestNormalizeTags:
         assert normalize_tags("") == []
         assert normalize_tags(None) == []
         assert normalize_tags([]) == []
+
+
+class TestNormalizeType:
+    def test_empty_inputs_return_empty_string(self):
+        assert normalize_type("") == ""
+        assert normalize_type(None) == ""
+        assert normalize_type("   ") == ""
+
+    def test_valid_type_is_canonicalized(self):
+        assert normalize_type("fact") == "fact"
+        assert normalize_type("DECISION") == "decision"
+        assert normalize_type("  #Preference  ") == "preference"
+
+    def test_every_vocabulary_member_is_accepted(self):
+        for t in MEMORY_TYPES:
+            assert normalize_type(t) == t
+            assert normalize_type(t.upper()) == t
+
+    def test_unknown_type_returns_none(self):
+        assert normalize_type("banana") is None
+        assert normalize_type("facts") is None      # no fuzzy/plural matching
+        assert normalize_type("pref") is None
+
+    def test_vocabulary_is_the_expected_13(self):
+        assert len(MEMORY_TYPES) == 13
+        assert len(set(MEMORY_TYPES)) == 13          # no duplicates
+        assert MEMORY_TYPES == tuple(t.lower() for t in MEMORY_TYPES)
+        for core in ("fact", "preference", "decision", "instruction", "error"):
+            assert core in MEMORY_TYPES
 
 
 class TestPruneOldBackups:

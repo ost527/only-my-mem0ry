@@ -102,12 +102,13 @@ starts and loads the embedder); after that it's instant.
 
 | Tool | What it does |
 |------|--------------|
-| `add_memory(text, user_id?, tags?)` | Store a fact verbatim. Optional `tags` (e.g. a project name) scope later search. Returns the nearest existing memories so you can reconcile. |
+| `add_memory(text, user_id?, tags?, mem_type?)` | Store a fact verbatim. Optional `tags` (e.g. a project name) scope later search; optional `mem_type` sets ONE semantic category (see [Memory types](#memory-types-typed-semantic-memory)). Returns the nearest existing memories so you can reconcile. |
 | `update_memory(id, text)` | Replace/merge an existing memory (avoid duplicates). |
 | `delete_memory(id)` | Remove an outdated or contradicted memory. |
-| `search_memories(query, user_id?, tags?)` | Semantic search; optional `tags` scope results to memories carrying **any** of them. Returns memories **with IDs** (📌 marks pinned, `#tags` shown). |
+| `search_memories(query, user_id?, tags?, mem_type?)` | Semantic search; optional `tags` (ANY-match) and/or `mem_type` scope results (the two filters combine, AND). Returns memories **with IDs** (📌 pinned, `[type]`, `#tags` shown). |
 | `tag_memory(id, tags)` | Set/replace a memory's tags (empty string clears). Tags live in the sidecar, so they survive `update_memory`. |
-| `list_memories(user_id?)` | List everything stored (with IDs; 📌 pinned, `#tags` shown). |
+| `set_memory_type(id, mem_type)` | Set/replace a memory's semantic **type** — one of 13 categories (empty string clears). Lives in the sidecar, so it survives `update_memory`. |
+| `list_memories(user_id?)` | List everything stored (with IDs; 📌 pinned, `[type]`, `#tags` shown). |
 | `pin_memory(id)` | Pin a memory into always-on **core** (mirrored to a file your rules load every session). Bounded by `MEM0_CORE_BUDGET`. |
 | `unpin_memory(id)` | Remove from core; the memory stays stored and searchable. |
 
@@ -202,6 +203,40 @@ Tags live in the sidecar (`memory_meta.json`), **not** in the vector store, so t
 survive `update_memory` and never affect embeddings or ranking. They are a hard
 post-filter layered on top of hybrid search — complementary to `user_id` (a full
 partition) and to pinning a fact into always-on **core**.
+
+---
+
+## Memory types (typed semantic memory)
+
+Beyond free-form tags, each memory can carry **one semantic type** — a category
+that says *what kind of thing* it is. Where a tag answers "which project?", a type
+answers "is this a decision, a preference, a fact, an instruction…?" so you can
+scope recall by kind ("show me the user's *preferences*", "what *decisions* were
+made?"). The vocabulary is a fixed set of **13 categories** (inspired by
+[memanto](https://github.com/moorcheh-ai/memanto)'s typed memory):
+
+> `fact` · `preference` · `decision` · `instruction` · `goal` · `commitment` ·
+> `relationship` · `context` · `event` · `learning` · `observation` · `artifact` ·
+> `error`
+
+- **Type a memory** when storing: `add_memory(text, mem_type="decision")`, or set
+  it later with `set_memory_type(id, "decision")` (an empty string clears it). On
+  `add_memory` an unrecognized type is **ignored with a warning** — the memory is
+  still stored (never dropped), so you lose no data; you can type it afterwards.
+  `set_memory_type` rejects an unknown type outright (nothing is at stake).
+- **Scope a search**: `search_memories(query, mem_type="decision")` returns only
+  memories of that type. It **combines with `tags`** (AND): e.g.
+  `search_memories("auth", tags="32min", mem_type="decision")` finds *32min*
+  decisions about auth. Without `mem_type`, search spans every type.
+- Types render as a `[type]` label in `search_memories` / `list_memories` (and in
+  the `curate_memories` inventory), and the HTML viewer gains a type filter and a
+  clickable type chip per card.
+
+A memory has **at most one** type (unlike tags, which are many and free-form); the
+controlled vocabulary keeps the categorization consistent and filterable. Like
+tags, the type lives in the sidecar (`memory_meta.json`), **not** the vector store,
+so it survives `update_memory` and never affects embeddings or ranking — it is a
+pure post-filter over hybrid search.
 
 ---
 

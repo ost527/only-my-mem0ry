@@ -99,12 +99,13 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 
 | 툴 | 하는 일 |
 |------|--------------|
-| `add_memory(text, user_id?, tags?)` | 사실을 그대로 저장. 선택적 `tags`(예: 프로젝트명)로 이후 검색 범위를 좁힘. 조정(reconcile)용으로 가장 가까운 기존 메모리를 함께 반환. |
+| `add_memory(text, user_id?, tags?, mem_type?)` | 사실을 그대로 저장. 선택적 `tags`(예: 프로젝트명)로 이후 검색 범위를 좁힘; 선택적 `mem_type`으로 의미 **유형** 하나를 지정([메모리 유형](#메모리-유형-타입형-시맨틱-메모리) 참고). 조정(reconcile)용으로 가장 가까운 기존 메모리를 함께 반환. |
 | `update_memory(id, text)` | 기존 메모리를 교체/병합(중복 방지). |
 | `delete_memory(id)` | 오래되었거나 모순되는 메모리 제거. |
-| `search_memories(query, user_id?, tags?)` | 시맨틱 검색; 선택적 `tags`로 그 태그 중 **하나라도** 가진 메모리로 범위를 좁힘. 메모리를 **ID와 함께** 반환(📌 고정, `#tags` 표시). |
+| `search_memories(query, user_id?, tags?, mem_type?)` | 시맨틱 검색; 선택적 `tags`(하나라도 일치)와/또는 `mem_type`으로 범위를 좁힘(두 필터는 AND로 결합). 메모리를 **ID와 함께** 반환(📌 고정, `[type]`, `#tags` 표시). |
 | `tag_memory(id, tags)` | 메모리의 태그를 설정/교체(빈 문자열이면 제거). 태그는 사이드카에 살아 `update_memory` 후에도 유지. |
-| `list_memories(user_id?)` | 저장된 모든 것을 나열(ID 포함; 📌 고정, `#tags` 표시). |
+| `set_memory_type(id, mem_type)` | 메모리의 의미 **유형**을 설정/교체 — 13개 범주 중 하나(빈 문자열이면 제거). 사이드카에 살아 `update_memory` 후에도 유지. |
+| `list_memories(user_id?)` | 저장된 모든 것을 나열(ID 포함; 📌 고정, `[type]`, `#tags` 표시). |
 | `pin_memory(id)` | 메모리를 상시 **코어**로 고정(룰 파일이 매 세션 로드하는 파일로 미러링). `MEM0_CORE_BUDGET`로 제한. |
 | `unpin_memory(id)` | 코어에서 해제; 메모리는 그대로 저장·검색됨. |
 
@@ -197,6 +198,37 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 태그는 벡터 스토어가 아니라 사이드카(`memory_meta.json`)에 저장되므로 `update_memory`
 후에도 유지되며 임베딩이나 랭킹에 전혀 영향을 주지 않습니다. 하이브리드 검색 위에 얹는
 하드 후처리 필터로, `user_id`(완전 분리)나 상시 **코어** 고정과 상호 보완적입니다.
+
+---
+
+## 메모리 유형 (타입형 시맨틱 메모리)
+
+자유 형식 태그와 별개로, 각 메모리는 의미 **유형**(그 메모리가 *어떤 종류*인지 말해주는
+범주)을 하나 가질 수 있습니다. 태그가 "어느 프로젝트?"에 답한다면, 유형은 "이게 결정인가,
+선호인가, 사실인가, 지시인가?"에 답하므로 종류별로 회상을 좁힐 수 있습니다("사용자의
+*선호*를 보여줘", "어떤 *결정*이 내려졌지?"). 어휘는 고정된 **13개 범주**입니다
+([memanto](https://github.com/moorcheh-ai/memanto)의 타입형 메모리에서 착안):
+
+> `fact` · `preference` · `decision` · `instruction` · `goal` · `commitment` ·
+> `relationship` · `context` · `event` · `learning` · `observation` · `artifact` ·
+> `error`
+
+- **저장 시 유형 지정**: `add_memory(text, mem_type="decision")`, 또는 나중에
+  `set_memory_type(id, "decision")`로 설정(빈 문자열이면 제거). `add_memory`에서
+  인식되지 않는 유형은 **경고와 함께 무시**되며 메모리 자체는 저장됩니다(절대 버려지지
+  않음) — 데이터 손실이 없고, 나중에 유형을 달면 됩니다. `set_memory_type`은 알 수 없는
+  유형을 단호히 거부합니다(잃을 게 없으므로).
+- **검색 범위 좁히기**: `search_memories(query, mem_type="decision")`는 그 유형의
+  메모리만 반환합니다. **`tags`와 결합(AND)**됩니다: 예) `search_memories("auth",
+  tags="32min", mem_type="decision")`는 *32min*의 auth 관련 *결정*을 찾습니다.
+  `mem_type` 없이 검색하면 모든 유형을 대상으로 합니다.
+- 유형은 `search_memories` / `list_memories`(및 `curate_memories` 인벤토리)에서
+  `[type]` 라벨로 표시되고, HTML 뷰어에 유형 필터와 카드별 클릭 가능한 유형 칩이 생깁니다.
+
+한 메모리는 유형을 **최대 하나만** 가집니다(여러 개 자유 형식인 태그와 다름). 통제된
+어휘 덕분에 분류가 일관되고 필터링이 쉽습니다. 태그와 마찬가지로 유형도 벡터 스토어가
+아니라 사이드카(`memory_meta.json`)에 저장되므로 `update_memory` 후에도 유지되며 임베딩이나
+랭킹에 영향을 주지 않습니다 — 하이브리드 검색 위에 얹는 순수 후처리 필터입니다.
 
 ---
 

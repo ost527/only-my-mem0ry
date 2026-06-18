@@ -102,6 +102,68 @@ def test_delete_removes_tags(srv):
     assert mid not in srv._load_meta().get("tags", {})
 
 
+def test_add_with_type_and_type_scoped_search(srv):
+    uid = "test_type_filter"
+    srv.add_memory("We deploy on Fridays only.", user_id=uid, mem_type="decision")
+    srv.add_memory("The user likes terse replies.", user_id=uid, mem_type="preference")
+    dec = srv.search_memories("deploy replies", user_id=uid, mem_type="decision")
+    assert "Fridays" in dec and "terse" not in dec
+    assert "[decision]" in dec               # the type label is rendered
+    pref = srv.search_memories("deploy replies", user_id=uid, mem_type="preference")
+    assert "terse" in pref and "Fridays" not in pref
+
+
+def test_set_memory_type_set_and_clear(srv):
+    uid = "test_settype"
+    mid = _new_id(srv.add_memory("note about ENV_FLAG handling", user_id=uid))
+    assert "Set type" in srv.set_memory_type(mid, "instruction")
+    assert srv._load_meta()["types"].get(mid) == "instruction"
+    assert "ENV_FLAG" in srv.search_memories("ENV_FLAG", user_id=uid, mem_type="instruction")
+    assert "Cleared" in srv.set_memory_type(mid, "")
+    assert mid not in srv._load_meta()["types"]
+    assert "No results" in srv.search_memories("ENV_FLAG", user_id=uid, mem_type="instruction")
+
+
+def test_add_memory_is_lenient_on_unknown_type(srv):
+    uid = "test_badtype_add"
+    out = srv.add_memory("a fact with a bogus type", user_id=uid, mem_type="bogus")
+    assert "Stored" in out and "Ignored unknown type" in out
+    mid = _new_id(out)
+    assert mid not in srv._load_meta()["types"]   # stored, but WITHOUT a type
+
+
+def test_set_memory_type_rejects_unknown_type(srv):
+    uid = "test_badtype_set"
+    mid = _new_id(srv.add_memory("another plain fact", user_id=uid))
+    assert "Unknown memory type" in srv.set_memory_type(mid, "nonsense")
+    assert mid not in srv._load_meta()["types"]
+
+
+def test_search_rejects_unknown_type_filter(srv):
+    uid = "test_badtype_search"
+    srv.add_memory("some searchable fact", user_id=uid)
+    assert "Unknown memory type" in srv.search_memories("fact", user_id=uid, mem_type="nope")
+
+
+def test_delete_removes_type(srv):
+    uid = "test_deltype"
+    mid = _new_id(srv.add_memory("temp typed fact", user_id=uid, mem_type="event"))
+    assert srv._load_meta()["types"].get(mid) == "event"
+    srv.delete_memory(mid)
+    assert mid not in srv._load_meta().get("types", {})
+
+
+def test_search_combines_tag_and_type_filters(srv):
+    uid = "test_tagtype"
+    srv.add_memory("Alpha uses Redis for caching.", user_id=uid, tags="proj-a", mem_type="fact")
+    srv.add_memory("Alpha decided to adopt Postgres.", user_id=uid, tags="proj-a", mem_type="decision")
+    srv.add_memory("Beta uses Redis for caching.", user_id=uid, tags="proj-b", mem_type="fact")
+    got = srv.search_memories("the project setup", user_id=uid, tags="proj-a", mem_type="fact")
+    assert "Alpha uses Redis" in got      # matches BOTH tag=proj-a AND type=fact
+    assert "Postgres" not in got          # excluded by type filter (it is a decision)
+    assert "Beta uses Redis" not in got   # excluded by tag filter (it is proj-b)
+
+
 def test_update_resyncs_core_file_for_pinned(srv):
     uid = "test_updcore"
     mid = _new_id(srv.add_memory("ORIGINAL fact about PORT 1234", user_id=uid))

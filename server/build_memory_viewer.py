@@ -49,21 +49,27 @@ def load_memories(chroma_path: str, collection: str, user: str) -> list:
 
 
 def load_meta(meta_path: str):
-    """Return (pinned:set, access:dict{id:{count,last}}, tags:dict{id:[...]}) from
-    the sidecar."""
+    """Return (pinned:set, access:dict{id:{count,last}}, tags:dict{id:[...]},
+    types:dict{id:"fact"}) from the sidecar."""
     meta = _load_sidecar(meta_path)
     return (set(meta.get("pinned") or []),
             (meta.get("access") or {}),
-            (meta.get("tags") or {}))
+            (meta.get("tags") or {}),
+            (meta.get("types") or {}))
 
 
-def build_payload(memories: list, pinned: set, access: dict, tags: dict, user: str) -> dict:
+def build_payload(memories: list, pinned: set, access: dict, tags: dict,
+                  types: dict, user: str) -> dict:
     records = []
     all_tags = set()
+    all_types = set()
     for r in memories:
         st = access.get(r["id"]) or {}
         tg = tags.get(r["id"]) or []
+        ty = types.get(r["id"]) or ""
         all_tags.update(tg)
+        if ty:
+            all_types.add(ty)
         records.append({
             "id": r["id"],
             "text": r["text"],
@@ -73,6 +79,7 @@ def build_payload(memories: list, pinned: set, access: dict, tags: dict, user: s
             "count": int(st.get("count", 0) or 0),
             "last": st.get("last"),
             "tags": tg,
+            "type": ty,
         })
     # Default order: newest first (the viewer re-sorts client-side anyway).
     records.sort(key=lambda x: (x["created"] or ""), reverse=True)
@@ -82,6 +89,7 @@ def build_payload(memories: list, pinned: set, access: dict, tags: dict, user: s
         "total": len(records),
         "pinnedCount": sum(1 for r in records if r["pinned"]),
         "allTags": sorted(all_tags),
+        "allTypes": sorted(all_types),
         "memories": records,
     }
 
@@ -97,12 +105,12 @@ TEMPLATE = r"""<!DOCTYPE html>
 <style>
   :root{
     --bg:#f4f5f7; --panel:#ffffff; --ink:#1d2330; --muted:#6b7280; --line:#e3e6ea;
-    --accent:#3b6ef5; --pin:#e0a400; --chip:#eef1f6; --mark:#fff2a8;
+    --accent:#3b6ef5; --pin:#e0a400; --chip:#eef1f6; --mark:#fff2a8; --type:#7a3fd0;
   }
   @media (prefers-color-scheme: dark){
     :root{
       --bg:#0e1116; --panel:#171b22; --ink:#e6e9ef; --muted:#9aa3b2; --line:#262c36;
-      --accent:#6c93ff; --pin:#f0c548; --chip:#222834; --mark:#5e5320;
+      --accent:#6c93ff; --pin:#f0c548; --chip:#222834; --mark:#5e5320; --type:#b794f6;
     }
   }
   *{box-sizing:border-box}
@@ -127,6 +135,7 @@ TEMPLATE = r"""<!DOCTYPE html>
   .chip{font-size:11px;color:var(--muted);background:var(--chip);border-radius:999px;padding:2px 9px;font-weight:600}
   .chip.pin{color:#7a5a00;background:rgba(224,164,0,.18)}
   .chip.tag{color:var(--accent);background:rgba(59,110,245,.13);cursor:pointer}
+  .chip.type{color:var(--type);background:rgba(124,77,255,.14);cursor:pointer;text-transform:uppercase;letter-spacing:.4px}
   .body{white-space:pre-wrap;word-break:break-word;margin:0}
   .body.clamp{max-height:210px;overflow:hidden;-webkit-mask-image:linear-gradient(#000 75%,transparent)}
   .more{align-self:flex-start;font:inherit;font-size:12px;color:var(--accent);background:none;border:none;
@@ -153,6 +162,7 @@ TEMPLATE = r"""<!DOCTYPE html>
       <option value="used">많이 조회순</option>
       <option value="pin">핀 우선</option>
     </select>
+    <select id="typesel"><option value="">🗂️ 전체 유형</option></select>
     <select id="tagsel"><option value="">🏷️ 전체 태그</option></select>
     <label class="chk"><input id="pinonly" type="checkbox"> 📌 핀만</label>
     <span class="stat" id="count"></span>
@@ -175,13 +185,19 @@ TEMPLATE = r"""<!DOCTYPE html>
   var sortEl = document.getElementById('sort');
   var pinEl = document.getElementById('pinonly');
   var tagEl = document.getElementById('tagsel');
+  var typeEl = document.getElementById('typesel');
   (DATA.allTags || []).forEach(function(t){
     var o = document.createElement('option'); o.value = t; o.textContent = '🏷️ ' + t;
     tagEl.appendChild(o);
   });
+  (DATA.allTypes || []).forEach(function(t){
+    var o = document.createElement('option'); o.value = t; o.textContent = '🗂️ ' + t;
+    typeEl.appendChild(o);
+  });
 
   document.getElementById('foot').textContent =
-    '전체 ' + DATA.total + '개 · 핀 ' + DATA.pinnedCount + '개 · 태그 ' + (DATA.allTags||[]).length +
+    '전체 ' + DATA.total + '개 · 핀 ' + DATA.pinnedCount + '개 · 유형 ' + (DATA.allTypes||[]).length +
+    '종 · 태그 ' + (DATA.allTags||[]).length +
     '종 · 사용자 ' + DATA.user + ' · 생성 ' + fmtDate(DATA.generated);
 
   function fmtDate(iso){
@@ -206,12 +222,15 @@ TEMPLATE = r"""<!DOCTYPE html>
     var sort = sortEl.value;
     var pinOnly = pinEl.checked;
     var tagSel = tagEl.value;
+    var typeSel = typeEl.value;
     var items = DATA.memories.filter(function(m){
       if(pinOnly && !m.pinned) return false;
+      if(typeSel && m.type !== typeSel) return false;
       if(tagSel && (m.tags || []).indexOf(tagSel) === -1) return false;
       if(!q) return true;
       return m.text.toLowerCase().indexOf(q) !== -1 ||
              m.id.toLowerCase().indexOf(q) !== -1 ||
+             (m.type || '').toLowerCase().indexOf(q) !== -1 ||
              (m.tags || []).join(' ').toLowerCase().indexOf(q) !== -1;
     });
     items.sort(function(a,b){
@@ -231,6 +250,8 @@ TEMPLATE = r"""<!DOCTYPE html>
       var badges = document.createElement('div');
       badges.className = 'badges';
       if(m.pinned){ var b=document.createElement('span'); b.className='chip pin'; b.textContent='📌 코어'; badges.appendChild(b); }
+      if(m.type){ var ty=document.createElement('span'); ty.className='chip type'; ty.textContent=m.type;
+        ty.title='이 유형으로 필터'; ty.addEventListener('click', function(){ typeEl.value=m.type; render(); }); badges.appendChild(ty); }
       if(m.count>0){ var u=document.createElement('span'); u.className='chip'; u.textContent='조회 '+m.count+'회'; badges.appendChild(u); }
       (m.tags || []).forEach(function(t){
         var c=document.createElement('span'); c.className='chip tag'; c.textContent='#'+t;
@@ -282,6 +303,7 @@ TEMPLATE = r"""<!DOCTYPE html>
   sortEl.addEventListener('change', render);
   pinEl.addEventListener('change', render);
   tagEl.addEventListener('change', render);
+  typeEl.addEventListener('change', render);
   render();
 })();
 </script>
@@ -308,8 +330,8 @@ def main():
     out_path = _expand(args.out)
 
     memories = load_memories(chroma_path, args.collection, args.user)
-    pinned, access, tags = load_meta(meta_path)
-    payload = build_payload(memories, pinned, access, tags, args.user)
+    pinned, access, tags, types = load_meta(meta_path)
+    payload = build_payload(memories, pinned, access, tags, types, args.user)
 
     data_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
     html_out = TEMPLATE.replace("__DATA_JSON__", data_json)

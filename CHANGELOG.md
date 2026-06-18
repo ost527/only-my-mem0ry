@@ -4,6 +4,30 @@ All notable changes to **local-mem0-mcp** are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/); the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-06-18
+
+### Added
+- **Memory types** — typed semantic memory (inspired by
+  [memanto](https://github.com/moorcheh-ai/memanto)): each memory can carry **one**
+  semantic category from a fixed vocabulary of 13 — `fact`, `preference`,
+  `decision`, `instruction`, `goal`, `commitment`, `relationship`, `context`,
+  `event`, `learning`, `observation`, `artifact`, `error` — so recall can be scoped
+  by *kind* (e.g. "show me the decisions"). Like tags, the type lives in the sidecar
+  (`memory_meta.json`), **not** the vector store, so it survives `update_memory` and
+  never affects embeddings or ranking (a pure post-filter over hybrid search).
+  - `add_memory(text, …, mem_type=…)` sets the type at write time; an unrecognized
+    type is **ignored with a warning** (the memory is still stored — no data loss).
+  - New tool `set_memory_type(id, mem_type)` sets/replaces a memory's type (empty
+    string clears it); it **rejects** an unknown type outright.
+  - `search_memories(query, …, mem_type=…)` post-filters results to one type and
+    **combines with `tags`** (AND across the two dimensions).
+  - The `[type]` label is shown in `search_memories` / `list_memories` /
+    `curate_memories`, and `curate_memories` gained a step to type untyped memories.
+  - The HTML viewer (`build_memory_viewer.py`) gains a type-filter dropdown and a
+    clickable type chip per card.
+  - New helpers in `server/mem0_store.py`: `MEMORY_TYPES` (the vocabulary) and
+    `normalize_type` (unit-tested); `load_meta` now defaults a `"types"` map.
+
 ## [0.3.0] — 2026-06-14
 
 ### Added
@@ -73,6 +97,7 @@ lifecycle, and one shared Chroma writer across all clients.
   Korean-heavy / bilingual stores — switch with `server/migrate_reembed.py`.
 - Migration scripts support opt-in backup pruning via `MEM0_BACKUP_KEEP`.
 
+[0.4.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.4.0
 [0.3.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.1.0
