@@ -1,8 +1,8 @@
-# local-mem0-mcp
+# only-my-mem0ry
 
 **English** | [한국어](README.ko.md)
 
-[![CI](https://github.com/ost527/local-mem0-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ost527/local-mem0-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/ost527/only-my-mem0ry/actions/workflows/ci.yml/badge.svg)](https://github.com/ost527/only-my-mem0ry/actions/workflows/ci.yml)
 
 **A fully local, zero-config [Mem0](https://github.com/mem0ai/mem0) memory server for MCP clients on macOS.**
 No LLM, no API key, no cloud — and no switch to flip. It starts when your IDE/CLI
@@ -60,8 +60,8 @@ fully offline.
 ## Install
 
 ```bash
-git clone https://github.com/ost527/local-mem0-mcp.git
-cd local-mem0-mcp
+git clone https://github.com/ost527/only-my-mem0ry.git
+cd only-my-mem0ry
 ./install.sh
 ```
 
@@ -85,9 +85,9 @@ Desktop, Cursor) — point it at the **stdio proxy** (use the absolute paths
 ```json
 {
   "mcpServers": {
-    "local-mem0-mcp": {
-      "command": "/ABS/PATH/local-mem0-mcp/.venv/bin/python3",
-      "args": ["/ABS/PATH/local-mem0-mcp/server/mem0_proxy.py"]
+    "only-my-mem0ry": {
+      "command": "/ABS/PATH/only-my-mem0ry/.venv/bin/python3",
+      "args": ["/ABS/PATH/only-my-mem0ry/server/mem0_proxy.py"]
     }
   }
 }
@@ -152,7 +152,7 @@ aren't burned re-explaining. Three layers push for that:
    steering, ...):
 
    ```markdown
-   ## Long-term memory (local-mem0-mcp)
+   ## Long-term memory (only-my-mem0ry)
    You have persistent memory shared with the user's other LLM clients/agents. Use it without being asked:
    - Task start: call search_memories with the task's key terms.
    - Before asking the user anything: search_memories first — the answer may already be stored.
@@ -562,7 +562,7 @@ are **never** required at runtime — install them only to ingest those formats.
 **What happened to the menu-bar toggle (and the old name)?**
 Early versions shipped a menu-bar on/off switch and were named `mem0-mcp-toggle`.
 The toggle was replaced by the automatic lifecycle above, and the project was
-renamed to `local-mem0-mcp`.
+renamed to `only-my-mem0ry`.
 
 **Does it need an LLM or API key?** No. Only a local embedder, which downloads
 once and then runs offline.

@@ -1,8 +1,8 @@
-# local-mem0-mcp
+# only-my-mem0ry
 
 [English](README.md) | **한국어**
 
-[![CI](https://github.com/ost527/local-mem0-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ost527/local-mem0-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/ost527/only-my-mem0ry/actions/workflows/ci.yml/badge.svg)](https://github.com/ost527/only-my-mem0ry/actions/workflows/ci.yml)
 
 **macOS의 MCP 클라이언트를 위한 완전 로컬·무설정 [Mem0](https://github.com/mem0ai/mem0) 메모리 서버.**
 LLM도, API 키도, 클라우드도 — 그리고 켜고 끄는 스위치도 없습니다. IDE/CLI를 열면
@@ -58,8 +58,8 @@ LLM도, API 키도, 클라우드도 — 그리고 켜고 끄는 스위치도 없
 ## 설치
 
 ```bash
-git clone https://github.com/ost527/local-mem0-mcp.git
-cd local-mem0-mcp
+git clone https://github.com/ost527/only-my-mem0ry.git
+cd only-my-mem0ry
 ./install.sh
 ```
 
@@ -82,9 +82,9 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
 ```json
 {
   "mcpServers": {
-    "local-mem0-mcp": {
-      "command": "/ABS/PATH/local-mem0-mcp/.venv/bin/python3",
-      "args": ["/ABS/PATH/local-mem0-mcp/server/mem0_proxy.py"]
+    "only-my-mem0ry": {
+      "command": "/ABS/PATH/only-my-mem0ry/.venv/bin/python3",
+      "args": ["/ABS/PATH/only-my-mem0ry/server/mem0_proxy.py"]
     }
   }
 }
@@ -148,7 +148,7 @@ MEM0_MCP_PORT=8800 MEM0_IDLE_TIMEOUT=900 ./install.sh
    `CLAUDE.md`, `.cursorrules`, Kiro steering 등)에도 붙여넣으세요:
 
    ```markdown
-   ## Long-term memory (local-mem0-mcp)
+   ## Long-term memory (only-my-mem0ry)
    You have persistent memory shared with the user's other LLM clients/agents. Use it without being asked:
    - Task start: call search_memories with the task's key terms.
    - Before asking the user anything: search_memories first — the answer may already be stored.
@@ -530,7 +530,7 @@ ruff + pytest를 실행합니다.
 
 **메뉴바 토글(과 옛 이름)은 어떻게 됐나요?**
 초기 버전에는 메뉴바 on/off 스위치가 있었고 이름은 `mem0-mcp-toggle`이었습니다.
-토글은 위의 자동 라이프사이클로 대체되었고, 프로젝트는 `local-mem0-mcp`로 이름이
+토글은 위의 자동 라이프사이클로 대체되었고, 프로젝트는 `only-my-mem0ry`로 이름이
 바뀌었습니다.
 
 **LLM이나 API 키가 필요한가요?** 아니요. 로컬 임베더만 필요하며, 한 번 다운로드된 뒤

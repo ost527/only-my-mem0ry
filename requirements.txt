@@ -1,4 +1,4 @@
-# Python deps for the local-mem0-mcp server. Python 3.10+.
+# Python deps for the only-my-mem0ry server. Python 3.10+.
 #
 # Dependency policy:
 #  - mem0ai is PINNED EXACTLY: the server relies on specific mem0 2.0.4 internals

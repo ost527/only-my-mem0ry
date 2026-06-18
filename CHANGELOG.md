@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to **local-mem0-mcp** are documented here. The format follows
+All notable changes to **only-my-mem0ry** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
@@ -212,11 +212,11 @@ lifecycle, and one shared Chroma writer across all clients.
   Korean-heavy / bilingual stores — switch with `server/migrate_reembed.py`.
 - Migration scripts support opt-in backup pruning via `MEM0_BACKUP_KEEP`.
 
-[0.8.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.8.0
-[0.7.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.7.0
-[0.6.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.6.0
-[0.5.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.5.0
-[0.4.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.4.0
-[0.3.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.3.0
-[0.2.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.2.0
-[0.1.0]: https://github.com/ost527/local-mem0-mcp/releases/tag/v0.1.0
+[0.8.0]: https://github.com/ost527/only-my-mem0ry/releases/tag/v0.8.0
+[0.7.0]: https://github.com/ost527/only-my-mem0ry/releases/tag/v0.7.0
+[0.6.0]: https://github.com/ost527/only-my-mem0ry/releases/tag/v0.6.0
+[0.5.0]: https://github.com/ost527/only-my-mem0ry/releases/tag/v0.5.0
+[0.4.0]: https://github.com/ost527/only-my-mem0ry/releases/tag/v0.4.0
+[0.3.0]: https://github.com/ost527/only-my-mem0ry/releases/tag/v0.3.0
+[0.2.0]: https://github.com/ost527/only-my-mem0ry/releases/tag/v0.2.0
+[0.1.0]: https://github.com/ost527/only-my-mem0ry/releases/tag/v0.1.0

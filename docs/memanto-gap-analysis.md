@@ -1,10 +1,10 @@
 # memanto 격차 분석 & 따라잡기 로드맵
 
-> 대상: **local-mem0-mcp v0.4.0** (commit `f8f5ada`) ↔ **moorcheh-ai/memanto v0.2.1**
+> 대상: **only-my-mem0ry v0.4.0** (commit `f8f5ada`) ↔ **moorcheh-ai/memanto v0.2.1**
 > 작성: 2026-06-18 · 상태: 제안(draft)
 >
 > 목적 — memanto의 기능을 1:1로 꼼꼼히 대조하고, **무엇을 / 어떤 순서로 / 어떻게**
-> 가져올지 결정한다. 핵심 전제: *local-mem0-mcp의 정체성을 깨지 않으면서* 격차를 좁힌다.
+> 가져올지 결정한다. 핵심 전제: *only-my-mem0ry의 정체성을 깨지 않으면서* 격차를 좁힌다.
 > "memanto를 흉내 내는 것"이 목표가 아니라, memanto가 지적한 "수동적 인프라의 6가지
 > 한계"를 **이 프로젝트의 철학(클라이언트가 두뇌·100% 로컬·결정적)에 맞는 방식으로**
 > 해소하는 것이 목표다.
@@ -74,7 +74,7 @@ MRR 0.917). CHANGELOG에 **0.5.0–0.8.0** 섹션으로 정리(태깅은 커밋 
 판정: **DONE**(이미 보유) · **ADOPT**(그대로 채택) · **ADAPT**(철학에 맞게 변형 채택) ·
 **DEFER**(나중) · **DECLINE**(의도적 거부).
 
-| # | memanto 기능 / 지적한 격차 | memanto 방식 | local-mem0-mcp 현재 | 판정 |
+| # | memanto 기능 / 지적한 격차 | memanto 방식 | only-my-mem0ry 현재 | 판정 |
 |---|---|---|---|---|
 | 1 | Flat memory → 타입형(13범주) | `--type`, 13 categories | `mem_type`, 동일 13범주 (v0.4.0) | **DONE** |
 | 2 | Indexing delay → zero-overhead ingestion | 쓰기 즉시 검색, LLM 추출세 없음 | `infer=False` verbatim 저장 | **DONE** |
@@ -106,7 +106,7 @@ MRR 0.917). CHANGELOG에 **0.5.0–0.8.0** 섹션으로 정리(태깅은 커밋 
 | 28 | 벤치마크(LongMemEval/LoCoMo) | 파이프라인 성능 | `eval_recall`(검색 recall) | **DEFER**(다른 계층) |
 
 > **핵심 인식**: #21~#26은 "격차"가 아니라 **다른 설계 선택**이다. memanto는 "메모리를
-> 똑똑하게(LLM 내장)", local-mem0-mcp는 "메모리는 단순하게, 클라이언트가 두뇌". #13
+> 똑똑하게(LLM 내장)", only-my-mem0ry는 "메모리는 단순하게, 클라이언트가 두뇌". #13
 > `answer`처럼 보이는 격차도 사실 **이미 가능**하다 — 클라이언트가 LLM이므로
 > `search → 답변`을 하면 된다. 우리는 그걸 *프롬프트로 1급 시민화*만 하면 된다.
 
@@ -271,7 +271,7 @@ bias 기본 off라 랭킹 불변). 자세한 내용은 CHANGELOG의 0.5.0–0.8.
 
 ## 부록 A — memanto의 "6가지 격차" 대응 현황
 
-| memanto가 말한 격차 | local-mem0-mcp 대응 | 상태 |
+| memanto가 말한 격차 | only-my-mem0ry 대응 | 상태 |
 |---|---|---|
 | ① Static injection (주입만) | search + 상시 core 주입 | ✅ 보유 |
 | ② No temporal decay | temporal 필터(P1) + recency tie-break(P3) | ✅ 완료 |

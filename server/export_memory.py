@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-export_memory.py — dump ALL of your local-mem0-mcp memories to a single Markdown
+export_memory.py — dump ALL of your only-my-mem0ry memories to a single Markdown
 (MEMORY.md-style) or JSON file.
 
 Like the HTML viewer, it reads the Chroma store + the sidecar (memory_meta.json)
@@ -32,7 +32,7 @@ def render_markdown(payload: dict) -> str:
     """Render the export payload (from build_payload) as a readable MEMORY.md.
     Pure (no I/O) so it is unit-testable without Chroma."""
     lines = [
-        "# Memory export — local-mem0-mcp",
+        "# Memory export — only-my-mem0ry",
         "",
         (f"<!-- Generated {payload['generated']} · user {payload['user']} · "
          f"{payload['total']} memories ({payload['pinnedCount']} pinned). "

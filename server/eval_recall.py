@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""recall@k evaluation harness for local-mem0-mcp retrieval.
+"""recall@k evaluation harness for only-my-mem0ry retrieval.
 
 Builds a fixed, labeled corpus in a THROWAWAY Chroma store and compares retrieval
 strategies (dense-only vs hybrid dense+BM25) on labeled queries, printing hit@k
@@ -64,7 +64,7 @@ CORPUS = {
     "config_order": "coupang-worker-controller loads config from cwd/coupang-worker-controller.config.json first, then the spare-mac-crawler-controller path, then the app Resources config.json",
     "renderer": "The renderer is independent of workers and fills dashboard fields with status and log commands",
     "xvfb": "Oracle A1 runs headless Chrome under Xvfb :99 on Ubuntu",
-    "server_design": "local-mem0-mcp is a single shared HTTP backend on 127.0.0.1:8765 started on demand by a per-client stdio proxy",
+    "server_design": "only-my-mem0ry is a single shared HTTP backend on 127.0.0.1:8765 started on demand by a per-client stdio proxy",
     "worker_list": "The three workers are local-mac-worker, mac-worker-1, and oracle-worker-1",
     "oracle_control": "oracle-worker-control.sh has macOS-only commands that fail on Ubuntu (pmset not found)",
     # bilingual (KO)

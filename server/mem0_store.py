@@ -221,7 +221,7 @@ def render_core_file(items: list) -> str:
     body = ("\n".join(f"- {it['memory']}  (id: {it['id']})" for it in items)
             if items else "(core memory is empty -- pin_memory adds entries)")
     return (
-        "# Core memory (always-on) — local-mem0-mcp\n"
+        "# Core memory (always-on) — only-my-mem0ry\n"
         "<!-- Auto-generated; do not edit. Manage with pin_memory / unpin_memory. -->\n\n"
         f"{body}\n"
     )

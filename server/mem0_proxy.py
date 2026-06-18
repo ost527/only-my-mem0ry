@@ -113,7 +113,7 @@ async def main() -> None:
     if not await _wait_ready(READY_TIMEOUT):
         _log(f"WARNING: backend {URL} not ready after {READY_TIMEOUT}s; serving anyway")
 
-    proxy = create_proxy(URL, name="local-mem0-mcp", instructions=INSTRUCTIONS)
+    proxy = create_proxy(URL, name="only-my-mem0ry", instructions=INSTRUCTIONS)
     proxy.add_middleware(_EnsureBackend())
     ka = asyncio.create_task(_keepalive())
     try:

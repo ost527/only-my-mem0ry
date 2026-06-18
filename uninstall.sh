@@ -23,5 +23,5 @@ Kept on purpose (delete manually if you want a full wipe):
   - venv:  <repo>/.venv
   - data:  ~/.mem0-mcp/chroma     (your stored memories)
   - logs:  ~/Library/Logs/mem0-mcp.log
-  - the "local-mem0-mcp" entry in your MCP client config
+  - the "only-my-mem0ry" entry in your MCP client config
 EOF

@@ -1,5 +1,5 @@
 #!/bin/bash
-# local-mem0-mcp installer (macOS).
+# only-my-mem0ry installer (macOS).
 # Sets up: a python venv + deps, and an ON-DEMAND launchd backend agent.
 #
 # Lifecycle: your MCP client launches a lightweight stdio proxy
@@ -16,7 +16,7 @@ IDLE="${MEM0_IDLE_TIMEOUT:-600}"
 LA="$HOME/Library/LaunchAgents"
 SERVER_LABEL="com.mem0mcp.server"
 
-echo "==> local-mem0-mcp installer"
+echo "==> only-my-mem0ry installer"
 echo "    repo:        $REPO"
 echo "    mode:        direct store (no LLM); agent-driven memory"
 echo "    port:        $PORT"
@@ -55,7 +55,7 @@ cat <<EOF
 Add this MCP server to your client config
 (e.g. ~/.kiro/settings/mcp.json, Claude Desktop, Cursor, ...):
 
-  "local-mem0-mcp": {
+  "only-my-mem0ry": {
     "command": "$PYTHON",
     "args": ["$REPO/server/mem0_proxy.py"]
   }

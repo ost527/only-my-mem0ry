@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 build_memory_viewer.py — generate a self-contained, READ-ONLY HTML card view of
-your local-mem0-mcp memories.
+your only-my-mem0ry memories.
 
 It reads the Chroma store + the pin/usage sidecar (memory_meta.json) DIRECTLY:
 no embedding model, no LLM, and no running MCP server are needed. It writes ONE

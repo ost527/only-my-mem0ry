@@ -26,7 +26,7 @@ def _mem(**kw):
 class TestRenderMarkdown:
     def test_includes_header_and_generated_comment(self):
         md = ex.render_markdown(_payload([_mem()]))
-        assert md.startswith("# Memory export — local-mem0-mcp")
+        assert md.startswith("# Memory export — only-my-mem0ry")
         assert "user u1" in md and "1 memories" in md
 
     def test_renders_all_metadata_for_a_memory(self):

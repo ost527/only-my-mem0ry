@@ -1,4 +1,4 @@
-# Tooling config for local-mem0-mcp (dev only; the server itself needs no build).
+# Tooling config for only-my-mem0ry (dev only; the server itself needs no build).
 #
 # Runtime deps are pinned in requirements.txt. Dev tools (pytest, ruff) are not
 # runtime deps and are installed ad hoc / by CI.

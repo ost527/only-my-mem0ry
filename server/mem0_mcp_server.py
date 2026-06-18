@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Local Mem0 MCP server — mem0 storage + the CALLING AGENT as the intelligence.
+only-my-mem0ry — a local Mem0 MCP server: mem0 storage + the CALLING AGENT as the intelligence.
 
 mem0's headline value is "smart memory": extract facts from text, then
 automatically ADD / UPDATE / DELETE related memories (dedup, conflict
@@ -236,7 +236,7 @@ def _ensure_cosine_for_new_store() -> None:
 
 _ensure_cosine_for_new_store()
 
-mcp = FastMCP("Local-Mem0-MCP", lifespan=_lifespan, instructions=INSTRUCTIONS)
+mcp = FastMCP("only-my-mem0ry", lifespan=_lifespan, instructions=INSTRUCTIONS)
 mcp.add_middleware(_ActivityMiddleware())
 
 
